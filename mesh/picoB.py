@@ -1,63 +1,200 @@
-import umqtt.simple as simple
-from machine import Pin
+# mesh_node.py (MINIMAL CHANGE ASSIGNMENT VERSION)
+import bluetooth
 import time
-import network
+import ubinascii
+import machine
+import urandom
+from micropython import const
 
-def connect_wifi(ssid, password):
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
+# --------- BLE IRQ EVENTS ----------
+_IRQ_SCAN_RESULT = const(5)
+_IRQ_SCAN_DONE   = const(6)
 
-    if not wlan.isconnected():
-        print("Connecting to WiFi...")
-        wlan.connect(ssid, password)
-        while not wlan.isconnected():
-            time.sleep(1)
+# --------- CONFIG ----------
+ADV_INTERVAL_US = 200_000      # advertising interval while active (200 ms)
+ADV_BURST_MS    = 300          # advertise only 300 ms per injection/forward
+SCAN_MS         = 10_000       # scan window (auto-restart)
 
-    print("WiFi connected:", wlan.ifconfig())
+INJECT_PERIOD_S = 60           # inject once every minute
+INJECT_JITTER_S = 10           # add 0..10s jitter
 
-connect_wifi("Wireless@Home", "63841520")
+DEFAULT_TTL     = 3            # used only in Part 3
+SEEN_MAX        = 400          # used only in Part 3
 
-led = Pin(20, Pin.OUT)
-btn_toggle = Pin(21, Pin.IN, Pin.PULL_UP)
-prev_toggle = btn_toggle.value()
+NODE_ID = ubinascii.hexlify(machine.unique_id()).decode()[-6:]  # stable per-board ID
 
-def callback_function(topic,msg):
-    client.publish(b"csc2106/led/ack", b"ACK",False,1)
-    if msg == b"TOGGLE":
-        led.toggle()
+# Pico internal temperature sensor (ADC4)
+temp_adc = machine.ADC(4)
+conv = 3.3 / 65535
 
-client = simple.MQTTClient(
-    client_id=b"PicoB",
-    server="192.168.1.28",
-    keepalive=0
-)
-client.set_last_will(
-    b"csc2106/devB/status",
-    b"offline",
-    retain=True,
-    qos=1
-)
+def read_temp_c():
+    v = temp_adc.read_u16() * conv
+    return 27 - (v - 0.706) / 0.001721
 
-client.set_callback(callback_function)
-client.connect()
+def make_frame(orig, msgid, ttl, typ, data):
+    return "M1|{}|{}|{}|{}|{}".format(orig, msgid, ttl, typ, data)
 
-client.publish(b"csc2106/devB/status",b"online",True,1)
+def parse_frame(s):
+    try:
+        if not s.startswith("M1|"):
+            return None
+        parts = s.split("|", 5)
+        if len(parts) != 6:
+            return None
+        _, orig, msgid, ttl_s, typ, data = parts
+        return orig, msgid, int(ttl_s), typ, data
+    except:
+        return None
 
-client.subscribe(b"csc2106/nodeB/led/cmd",1)
+def adv_payload_name(name_str):
+    name = name_str.encode()
+    payload = bytearray(b"\x02\x01\x06")                 # Flags
+    payload += bytearray((len(name) + 1, 0x09)) + name   # Complete Local Name
+    return payload
 
+def frame_to_name(frame):
+    return frame[:25]
 
-while True:
+class Node:
+    def __init__(self):
+        self.ble = bluetooth.BLE()
+        self.ble.active(True)
+        self.ble.irq(self._irq)
 
-    cur_toggle = btn_toggle.value()
-    client.check_msg()
+        self._adv_active = False
+        self._adv_stop_ms = 0
 
+        self.seen = []      # dedup
+        self.rx_buf = []    # assignment buffer
 
-    if prev_toggle == 1 and cur_toggle == 0:
-        print("TOGGLE pressed")
-        client.publish(
-            b"csc2106/nodeA/led/cmd",
-            b"TOGGLE",
-            qos=1
+        self.next_inject_ms = time.ticks_add(
+            time.ticks_ms(),
+            (INJECT_PERIOD_S + self._rand_jitter_s()) * 1000
         )
-    prev_toggle = cur_toggle
-    time.sleep(0.05)  
+
+        self.scan()
+        print("Node ID:", NODE_ID)
+
+    def _rand_jitter_s(self):
+        return urandom.getrandbits(8) % (INJECT_JITTER_S + 1)
+
+    def advertise_burst_start(self, frame, duration_ms=ADV_BURST_MS):
+        payload = adv_payload_name(frame_to_name(frame))
+        self.ble.gap_advertise(ADV_INTERVAL_US, adv_data=payload)
+        self._adv_active = True
+        self._adv_stop_ms = time.ticks_add(time.ticks_ms(), duration_ms)
+
+    def advertise_burst_service(self):
+        if self._adv_active and time.ticks_diff(time.ticks_ms(), self._adv_stop_ms) >= 0:
+            self.ble.gap_advertise(None)
+            self._adv_active = False
+
+    def scan(self):
+        self.ble.gap_scan(SCAN_MS, 30000, 30000)
+
+    # ---------- Periodic T injection ----------
+    def inject_own(self):
+        temp = read_temp_c()
+        data = "{:.2f}".format(temp)
+        msgid = str(time.ticks_ms() & 0xFFFFFFFF)
+
+        frame = make_frame(NODE_ID, msgid, DEFAULT_TTL, "T", data)
+        self.seen_check_add("{}:{}".format(NODE_ID, msgid))
+
+        self.advertise_burst_start(frame)
+        print("INJECT (T):", frame)
+
+        self.next_inject_ms = time.ticks_add(
+            time.ticks_ms(),
+            (INJECT_PERIOD_S + self._rand_jitter_s()) * 1000
+        )
+
+    # ---------- Assignment R injection ----------
+    def inject_R(self):
+        origins = ",".join([o for o,_ in self.rx_buf])
+        msgid = str(time.ticks_ms() & 0xFFFFFFFF)
+        frame = make_frame(NODE_ID, msgid, 0, "R", origins)
+
+        self.advertise_burst_start(frame)
+        print("INJECT (R):", frame)
+
+        self.rx_buf.clear()
+
+    def _irq(self, event, data):
+        if event == _IRQ_SCAN_RESULT:
+            addr_type, addr, adv_type, rssi, adv_data = data
+            try:
+                raw = bytes(adv_data)
+                idx = raw.find(b"M1|")
+                if idx == -1:
+                    return
+                s = raw[idx:].decode("utf-8", "ignore").split("\x00")[0]
+            except:
+                return
+
+            parsed = parse_frame(s)
+            if not parsed:
+                return
+
+            orig, msgid, ttl, typ, payload = parsed
+
+            # ignore R packets
+            if typ == "R":
+                return
+
+            key = "{}:{}".format(orig, msgid)
+            if self.seen_check_add(key):
+                return
+
+            # ignore self-origin packets for counting
+            if orig == NODE_ID:
+                return
+
+            print("RX NEW (rssi={}): orig={} ttl={} type={} data={}".format(
+                rssi, orig, ttl, typ, payload
+            ))
+
+            # ---- assignment counting ----
+            self.rx_buf.append((orig, msgid))
+
+            if len(self.rx_buf) == 5:
+                print("\n--- RECEIVED 5 PACKETS ---")
+                for i,(o,m) in enumerate(self.rx_buf):
+                    print("{} ) orig={} msgid={}".format(i+1,o,m))
+                self.inject_R()
+
+            if ttl > 0:
+                self.forward_ttl(orig, msgid, ttl, typ, payload)
+
+        elif event == _IRQ_SCAN_DONE:
+            self.scan()
+
+    def run(self):
+        while True:
+            self.advertise_burst_service()
+
+            now = time.ticks_ms()
+            if time.ticks_diff(now, self.next_inject_ms) >= 0:
+                self.inject_own()
+
+            time.sleep_ms(20)
+
+    def seen_check_add(self, key):
+        if key in self.seen:
+            return True
+        self.seen.append(key)
+        if len(self.seen) > SEEN_MAX:
+            del self.seen[0:len(self.seen) - SEEN_MAX]
+        return False
+
+    def forward_ttl(self, orig, msgid, ttl, typ, payload):
+        ttl2 = ttl - 1
+        if ttl2 < 0:
+            return
+
+        fwd = make_frame(orig, msgid, ttl2, typ, payload)
+        self.advertise_burst_start(fwd)
+        print("FWD ttl={}: {}".format(ttl2, fwd))
+
+node = Node()
+node.run()

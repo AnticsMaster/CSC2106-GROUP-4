@@ -33,7 +33,7 @@ def callback_function(topic,msg):
 
 client = simple.MQTTClient(
     client_id=b"PicoA",
-    server="192.168.1.28",
+    server="10.236.91.21",
     keepalive=30
 )
 

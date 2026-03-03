@@ -28,7 +28,7 @@ def callback_function(topic,msg):
 
 client = simple.MQTTClient(
     client_id=b"PicoB",
-    server="192.168.1.28",
+    server="10.236.91.21",
     keepalive=0
 )
 client.set_last_will(
