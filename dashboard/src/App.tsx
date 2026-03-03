@@ -1,9 +1,18 @@
+import { useState } from "react";
 import { Navbar } from "./components/Navbar";
 import { ClassroomGrid } from "./components/ClassroomGrid";
+import { ClassroomDetail } from "./components/ClassroomDetail";
 import { useClassrooms } from "./hooks/useClassrooms";
+import type { Classroom } from "./types";
 
 function App() {
   const { classrooms, loading, error } = useClassrooms();
+  const [selectedRoom, setSelectedRoom] = useState<Classroom | null>(null);
+
+  // Keep selectedRoom in sync with live data
+  const liveSelectedRoom = selectedRoom
+    ? classrooms.find((r) => r.roomId === selectedRoom.roomId) ?? selectedRoom
+    : null;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -40,6 +49,13 @@ function App() {
           </span>
         </div>
 
+        {/* Hint */}
+        {!loading && !error && classrooms.length > 0 && (
+          <p className="mb-4 text-xs text-slate-400">
+            Click a room card to view occupancy history and predictions.
+          </p>
+        )}
+
         {/* Content */}
         {loading && (
           <p className="py-20 text-center text-slate-400">
@@ -54,8 +70,21 @@ function App() {
           </div>
         )}
 
-        {!loading && !error && <ClassroomGrid classrooms={classrooms} />}
+        {!loading && !error && (
+          <ClassroomGrid
+            classrooms={classrooms}
+            onSelect={setSelectedRoom}
+          />
+        )}
       </main>
+
+      {/* Detail modal */}
+      {liveSelectedRoom && (
+        <ClassroomDetail
+          room={liveSelectedRoom}
+          onClose={() => setSelectedRoom(null)}
+        />
+      )}
     </div>
   );
 }

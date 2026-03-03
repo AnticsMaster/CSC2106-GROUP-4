@@ -17,9 +17,10 @@ function formatTime(ts: Classroom["lastUpdated"]): string {
 
 interface ClassroomCardProps {
   room: Classroom;
+  onClick?: () => void;
 }
 
-export function ClassroomCard({ room }: ClassroomCardProps) {
+export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
   const borderColor =
     room.deviceStatus === "offline"
       ? "border-gray-300"
@@ -29,7 +30,11 @@ export function ClassroomCard({ room }: ClassroomCardProps) {
 
   return (
     <div
-      className={`rounded-xl border-2 ${borderColor} bg-white p-5 shadow-sm transition-shadow hover:shadow-md`}
+      className={`rounded-xl border-2 ${borderColor} bg-white p-5 shadow-sm transition-shadow hover:shadow-md ${onClick ? "cursor-pointer" : ""}`}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
     >
       {/* Header */}
       <div className="mb-3 flex items-start justify-between">

@@ -3,9 +3,10 @@ import { ClassroomCard } from "./ClassroomCard";
 
 interface ClassroomGridProps {
   classrooms: Classroom[];
+  onSelect?: (room: Classroom) => void;
 }
 
-export function ClassroomGrid({ classrooms }: ClassroomGridProps) {
+export function ClassroomGrid({ classrooms, onSelect }: ClassroomGridProps) {
   if (classrooms.length === 0) {
     return (
       <div className="py-20 text-center text-slate-500">
@@ -21,7 +22,11 @@ export function ClassroomGrid({ classrooms }: ClassroomGridProps) {
   return (
     <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
       {classrooms.map((room) => (
-        <ClassroomCard key={room.roomId} room={room} />
+        <ClassroomCard
+          key={room.roomId}
+          room={room}
+          onClick={onSelect ? () => onSelect(room) : undefined}
+        />
       ))}
     </div>
   );
