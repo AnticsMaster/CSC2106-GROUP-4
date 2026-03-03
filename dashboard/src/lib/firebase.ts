@@ -1,13 +1,15 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  apiKey: "AIzaSyDP9NIXm9hIzDGQ3G9FS1TpZQdVnGq3CCE",
+  authDomain: "iot-project-95f1e.firebaseapp.com",
+  projectId: "iot-project-95f1e",
+  storageBucket: "iot-project-95f1e.firebasestorage.app",
+  messagingSenderId: "219565334033",
+  appId: "1:219565334033:web:95eb6cf79d4672d46e9bb0",
+  measurementId: "G-QC023Z3WRS"
 };
 
 const app = initializeApp(firebaseConfig);
