@@ -3,6 +3,7 @@ from machine import Pin
 import time
 import network
 
+
 def connect_wifi(ssid, password):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -17,19 +18,21 @@ def connect_wifi(ssid, password):
 
 connect_wifi("Wireless@Home", "63841520")
 
-led = Pin(20, Pin.OUT)
 btn_toggle = Pin(21, Pin.IN, Pin.PULL_UP)
+btn_hello  = Pin(22, Pin.IN, Pin.PULL_UP)
+led = Pin(20, Pin.OUT)
+
 prev_toggle = btn_toggle.value()
+prev_hello  = btn_hello.value()
 
 def callback_function(topic,msg):
-    client.publish(b"csc2106/led/ack", b"ACK",False,1)
     if msg == b"TOGGLE":
         led.toggle()
 
 client = simple.MQTTClient(
     client_id=b"PicoB",
     server="10.236.91.21",
-    keepalive=0
+    keepalive=30
 )
 client.set_last_will(
     b"csc2106/devB/status",
@@ -41,14 +44,23 @@ client.set_last_will(
 client.set_callback(callback_function)
 client.connect()
 
-client.publish(b"csc2106/devB/status",b"online",True,1)
+# Publish online status
+client.publish(
+    b"csc2106/devB/status",
+    b"online",
+    retain=True,
+    qos=1
+)
 
 client.subscribe(b"csc2106/nodeB/led/cmd",1)
+
+print("MQTT connected")
 
 
 while True:
 
     cur_toggle = btn_toggle.value()
+    cur_hello  = btn_hello.value()
     client.check_msg()
 
 
@@ -59,5 +71,17 @@ while True:
             b"TOGGLE",
             qos=1
         )
+
+
+    if prev_hello == 1 and cur_hello == 0:
+        print("HELLO pressed")
+        client.publish(
+            b"csc2106/led/hello",
+            b"HELLO",
+            qos=1
+        )
+
     prev_toggle = cur_toggle
-    time.sleep(0.05)  
+    prev_hello  = cur_hello
+
+    time.sleep(0.05) 
