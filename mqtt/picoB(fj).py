@@ -7,9 +7,9 @@ import ujson
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-WIFI_SSID = "Danwifi"
-WIFI_PASSWORD = "wifiisgood"
-BROKER_IP = "10.236.91.21"
+WIFI_SSID = "js"
+WIFI_PASSWORD = "12345678"
+BROKER_IP = "172.20.10.2"
 ROOM_ID = "room-B"
 ROOM_NAME = "Room 2.2"
 PUBLISH_TOPIC = "csc2106/classroom/" + ROOM_ID + "/occupancy"
