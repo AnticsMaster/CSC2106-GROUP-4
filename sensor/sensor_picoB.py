@@ -1,149 +1,349 @@
-# sensor_picoB.py  –  Sensor Pico, Building B
-# Identical logic to sensor_picoA.py. Only room config differs.
+# sensor_picoB.py  –  Sensor Pico, Building E6
+#
+# Dual role:
+#   1. PIR + ultrasonic occupancy counting (own classroom)
+#   2. BLE mesh relay — forwards other classrooms' frames toward the head node
+#
+# Topology (E6 building):
+#   Classroom 3 → Classroom 2 → Classroom 1 → Head Node
+#
+# Each classroom Pico scans BLE continuously and relays frames it hasn't seen
+# before (TTL-1). On count change it injects its own "C" frame into the mesh.
+# No WiFi or MQTT on sensor Picos — BLE only.
 
-import umqtt.simple as simple
-from machine import Pin
+import bluetooth
 import time
-import network
+import ubinascii
+import machine
+from machine import Pin, time_pulse_us
 import urandom
-import ujson
+from micropython import const
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-WIFI_SSID     = "js"
-WIFI_PASSWORD = "12345678"
-BROKER_IP     = "172.20.10.2"
-ROOM_ID       = "E6-02-02"
-ROOM_NAME     = "E6-02-02"
-CLIENT_ID     = b"SensorB"
+# ── BLE IRQ events ────────────────────────────────────────────────────────────
+_IRQ_SCAN_RESULT = const(5)
+_IRQ_SCAN_DONE   = const(6)
 
-INBOX_A   = "csc2106/classroom/" + ROOM_ID + "/HeadNode-E6/data"
-INBOX_B   = "csc2106/classroom/" + ROOM_ID + "/Backup-E6/data"
-ACK_TOPIC = "csc2106/classroom/" + ROOM_ID + "/ack"
+# ── BLE config ────────────────────────────────────────────────────────────────
+ADV_INTERVAL_US = 200_000   # advertising interval during burst
+ADV_BURST_MS    = 300       # advertise for 300 ms then stop
+SCAN_MS         = 10_000    # scan window (restarts automatically)
+DEFAULT_TTL     = 3         # enough for 3-hop chain (CL3→CL2→CL1→Head)
+SEEN_MAX        = 200       # dedup cache size
 
-PUBLISH_INTERVAL_MS = 15000
-ACK_TIMEOUT_MS      = 2000
-MAX_RETRIES         = 2
+# ── Node identity ─────────────────────────────────────────────────────────────
+# NODE_ID is stable across reboots — derived from hardware UID.
+# Print this on first boot and give it to your teammate to add to NODE_MAP
+# in the head node files.
+NODE_ID = ubinascii.hexlify(machine.unique_id()).decode()[-6:]
 
-# ── WiFi ───────────────────────────────────────────────────────────────────────
-def connect_wifi(ssid, password):
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print("Connecting to WiFi...")
-        wlan.connect(ssid, password)
-        while not wlan.isconnected():
-            time.sleep(1)
-    print("WiFi connected:", wlan.ifconfig())
+# ── Classroom identity ────────────────────────────────────────────────────────
+# Change ROOM_ID for each classroom Pico before flashing:
+#   Classroom 1 (closest to head node) → "E6-02-01"
+#   Classroom 2                         → "E6-02-02"
+#   Classroom 3 (furthest)              → "E6-02-03"
+ROOM_ID = "E6-02-01"
 
-connect_wifi(WIFI_SSID, WIFI_PASSWORD)
+# ── PIR config ────────────────────────────────────────────────────────────────
+PIR_PIN              = 26
+PIR_WARMUP_MS        = 2000
+PIR_DEBOUNCE_MS      = 200
+PIR_QUIET_TIMEOUT_MS = 1500
+IDLE_SLEEP_MS        = 200
 
-led = Pin("LED", Pin.OUT)
+# ── Ultrasonic config ─────────────────────────────────────────────────────────
+TRIG1_PIN             = 3
+ECHO1_PIN             = 2
+TRIG2_PIN             = 5
+ECHO2_PIN             = 4
+THRESHOLD_CM          = 125
+MAX_RANGE_CM          = 400
+HIT_CONFIRM           = 2
+TIMEOUT_WINDOW_MS     = 1500
+MIN_INTERVAL_MS       = 1500
+INTER_SENSOR_DELAY_MS = 60
+LOOP_DELAY_MS         = 20
 
-# ── Simulated occupancy (replace with real sensor read) ────────────────────────
-MAX_CAPACITY = 40
-sim_count    = 5   # Room B starts with a small crowd
+# ── Hardware ──────────────────────────────────────────────────────────────────
+pir   = Pin(PIR_PIN,   Pin.IN)
+TRIG1 = Pin(TRIG1_PIN, Pin.OUT)
+ECHO1 = Pin(ECHO1_PIN, Pin.IN)
+TRIG2 = Pin(TRIG2_PIN, Pin.OUT)
+ECHO2 = Pin(ECHO2_PIN, Pin.IN)
 
-def read_sensor():
-    """Replace this body with real sensor logic when hardware is ready."""
-    global sim_count
-    delta = (urandom.getrandbits(4) % 9) - 4
-    sim_count = max(0, min(MAX_CAPACITY, sim_count + delta))
-    return sim_count
+# ── BLE frame helpers ─────────────────────────────────────────────────────────
+def make_frame(orig, msgid, ttl, typ, data):
+    return "M1|{}|{}|{}|{}|{}".format(orig, msgid, ttl, typ, data)
 
-# ── Failover state ─────────────────────────────────────────────────────────────
-active_inbox  = INBOX_A
-standby_inbox = INBOX_B
-
-# ── ACK tracking ───────────────────────────────────────────────────────────────
-_ack_received = False
-
-def on_message(topic, msg):
-    global _ack_received
-    if topic.decode() == ACK_TOPIC:
-        _ack_received = True
-
-# ── MQTT connect helper ────────────────────────────────────────────────────────
-def mqtt_connect():
-    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, keepalive=60)
-    c.set_callback(on_message)
-    c.connect()
-    c.subscribe(ACK_TOPIC.encode(), qos=1)
-    print("[E6-Building] MQTT connected, active head=" + active_inbox)
-    return c
-
-client = mqtt_connect()
-
-# ── ACK wait ───────────────────────────────────────────────────────────────────
-def wait_for_ack():
-    global _ack_received
-    _ack_received = False
-    deadline = time.ticks_add(time.ticks_ms(), ACK_TIMEOUT_MS)
-    while not _ack_received:
-        if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
-            return False
-        try:
-            client.check_msg()
-        except OSError:
-            return False
-        time.sleep_ms(50)
-    return True
-
-def send_once(inbox, payload):
+def parse_frame(s):
     try:
-        client.publish(inbox.encode(), payload, qos=1)
-        return wait_for_ack()
+        if not s.startswith("M1|"):
+            return None
+        parts = s.split("|", 5)
+        if len(parts) != 6:
+            return None
+        _, orig, msgid, ttl_s, typ, data = parts
+        return orig, msgid, int(ttl_s), typ, data
+    except Exception:
+        return None
+
+def adv_payload_name(name_str):
+    name    = name_str.encode()
+    payload = bytearray(b"\x02\x01\x06")
+    payload += bytearray((len(name) + 1, 0x09)) + name
+    return payload
+
+def frame_to_name(frame):
+    return frame[:25]   # BLE local name limited to 25 chars safely
+
+# ── Ultrasonic distance ───────────────────────────────────────────────────────
+def get_distance_cm(trig, echo):
+    trig.low()
+    time.sleep_us(2)
+    trig.high()
+    time.sleep_us(10)
+    trig.low()
+    try:
+        dur = time_pulse_us(echo, 1, 30000)
     except OSError:
+        return 999
+    dist = (dur * 343) // 20000
+    return int(dist) if 0 < dist <= MAX_RANGE_CM else 999
+
+# ── Counting FSM ──────────────────────────────────────────────────────────────
+_IDLE         = 0
+_S1_TRIGGERED = 1
+_S2_TRIGGERED = 2
+_WAIT_CLEAR   = 3
+
+_state          = _IDLE
+_state_start_ms = 0
+_last_count_ms  = 0
+count           = 0
+_s1_hits        = 0
+_s2_hits        = 0
+
+def reset_ultra_fsm(t_ms):
+    global _state, _state_start_ms, _s1_hits, _s2_hits
+    _state = _IDLE; _state_start_ms = t_ms
+    _s1_hits = _s2_hits = 0
+
+def ultrasonic_step(t_ms):
+    """One FSM tick (~80 ms). Updates global `count` on ENTER/EXIT."""
+    global _state, _state_start_ms, _last_count_ms, count, _s1_hits, _s2_hits
+
+    d1 = get_distance_cm(TRIG1, ECHO1)
+    time.sleep_ms(INTER_SENSOR_DELAY_MS)
+    d2 = get_distance_cm(TRIG2, ECHO2)
+
+    if _state == _IDLE:
+        _s1_hits = (_s1_hits + 1) if d1 < THRESHOLD_CM else 0
+        _s2_hits = (_s2_hits + 1) if d2 < THRESHOLD_CM else 0
+        if _s1_hits >= HIT_CONFIRM:
+            _state = _S1_TRIGGERED; _state_start_ms = t_ms
+            _s1_hits = _s2_hits = 0
+        elif _s2_hits >= HIT_CONFIRM:
+            _state = _S2_TRIGGERED; _state_start_ms = t_ms
+            _s1_hits = _s2_hits = 0
+
+    elif _state == _S1_TRIGGERED:
+        if d2 < THRESHOLD_CM and time.ticks_diff(t_ms, _last_count_ms) > MIN_INTERVAL_MS:
+            count += 1
+            print("ENTER → Count:", count)
+            _last_count_ms = t_ms; _state = _WAIT_CLEAR
+        elif time.ticks_diff(t_ms, _state_start_ms) > TIMEOUT_WINDOW_MS:
+            _state = _IDLE
+
+    elif _state == _S2_TRIGGERED:
+        if d1 < THRESHOLD_CM and time.ticks_diff(t_ms, _last_count_ms) > MIN_INTERVAL_MS:
+            if count > 0: count -= 1
+            print("EXIT  → Count:", count)
+            _last_count_ms = t_ms; _state = _WAIT_CLEAR
+        elif time.ticks_diff(t_ms, _state_start_ms) > TIMEOUT_WINDOW_MS:
+            _state = _IDLE
+
+    elif _state == _WAIT_CLEAR:
+        if d1 > THRESHOLD_CM and d2 > THRESHOLD_CM:
+            _state = _IDLE
+
+    time.sleep_ms(LOOP_DELAY_MS)
+
+# ── PIR session gating ────────────────────────────────────────────────────────
+_pir_motion_flag  = False
+_last_pir_irq_ms  = 0
+_last_pir_high_ms = 0
+
+def pir_irq_handler(pin):
+    global _pir_motion_flag, _last_pir_irq_ms
+    t = time.ticks_ms()
+    if time.ticks_diff(t, _last_pir_irq_ms) > PIR_DEBOUNCE_MS:
+        _pir_motion_flag = True
+        _last_pir_irq_ms = t
+
+try:
+    pir.irq(trigger=Pin.IRQ_RISING, handler=pir_irq_handler)
+except Exception:
+    pass
+
+# ── Mesh node class ───────────────────────────────────────────────────────────
+class SensorNode:
+    def __init__(self):
+        self.ble = bluetooth.BLE()
+        self.ble.active(True)
+        self.ble.irq(self._irq)
+
+        self._adv_active  = False
+        self._adv_stop_ms = 0
+        self.seen         = []
+
+        # Frames queued by IRQ to be forwarded in the main loop
+        # (IRQ context must stay short — no advertising inside IRQ)
+        self._fwd_queue = []
+
+        self._msgid_ctr = 0
+
+        self.scan()
+        print("Sensor Node ID:", NODE_ID, " Room:", ROOM_ID)
+
+    # ── BLE scan ─────────────────────────────────────────────────────────────
+    def scan(self):
+        self.ble.gap_scan(SCAN_MS, 30000, 30000)
+
+    # ── BLE advertise burst ───────────────────────────────────────────────────
+    def advertise_burst_start(self, frame):
+        payload = adv_payload_name(frame_to_name(frame))
+        self.ble.gap_advertise(ADV_INTERVAL_US, adv_data=payload)
+        self._adv_active  = True
+        self._adv_stop_ms = time.ticks_add(time.ticks_ms(), ADV_BURST_MS)
+
+    def advertise_burst_service(self):
+        """Call every main loop tick to stop burst when window expires."""
+        if self._adv_active and time.ticks_diff(time.ticks_ms(), self._adv_stop_ms) >= 0:
+            self.ble.gap_advertise(None)
+            self._adv_active = False
+
+    # ── Dedup cache ───────────────────────────────────────────────────────────
+    def seen_check_add(self, key):
+        if key in self.seen:
+            return True
+        self.seen.append(key)
+        if len(self.seen) > SEEN_MAX:
+            del self.seen[0: len(self.seen) - SEEN_MAX]
         return False
 
-# ── Deliver with retry + failover ──────────────────────────────────────────────
-def deliver(payload):
-    global active_inbox, standby_inbox
+    # ── Inject own count frame ────────────────────────────────────────────────
+    def inject_count(self, c):
+        self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFFF
+        # Data field: "<ROOM_ID>:<count>" so head node knows which room
+        # e.g. "E6-02-01:5"  →  fits within 25-char frame limit
+        data  = "{}:{}".format(ROOM_ID, c)
+        frame = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "C", data)
+        self.seen_check_add("{}:{}".format(NODE_ID, self._msgid_ctr))
+        self.advertise_burst_start(frame)
+        print("TX  {} count={}".format(ROOM_ID, c))
 
-    for attempt in range(MAX_RETRIES + 1):
-        if send_once(active_inbox, payload):
-            return True
-        print("[SensorB] No ACK from active (attempt " + str(attempt + 1) + ")")
+    # ── Forward a received frame (TTL-1) ──────────────────────────────────────
+    def forward_ttl(self, orig, msgid, ttl, typ, data):
+        ttl2 = ttl - 1
+        if ttl2 < 0:
+            return
+        fwd = make_frame(orig, msgid, ttl2, typ, data)
+        self.advertise_burst_start(fwd)
+        print("FWD ttl={} orig={}".format(ttl2, orig))
 
-    print("[SensorB] Active unresponsive — probing standby: " + standby_inbox)
-    if send_once(standby_inbox, payload):
-        active_inbox, standby_inbox = standby_inbox, active_inbox
-        print("[SensorB] SWAPPED — new active: " + active_inbox)
-        return True
+    # ── BLE IRQ ───────────────────────────────────────────────────────────────
+    def _irq(self, event, data):
+        if event == _IRQ_SCAN_RESULT:
+            addr_type, addr, adv_type, rssi, adv_data = data
+            try:
+                raw = bytes(adv_data)
+                idx = raw.find(b"M1|")
+                if idx == -1:
+                    return
+                s = raw[idx:].decode("utf-8", "ignore").split("\x00")[0]
+            except Exception:
+                return
 
-    print("[SensorB] Both head nodes unresponsive — data dropped this cycle")
-    return False
+            parsed = parse_frame(s)
+            if not parsed:
+                return
 
-# ── Main loop ──────────────────────────────────────────────────────────────────
-last_pub = time.ticks_ms() - PUBLISH_INTERVAL_MS
+            orig, msgid, ttl, typ, payload = parsed
 
-while True:
-    now = time.ticks_ms()
+            # Only handle count frames
+            if typ != "C":
+                return
 
-    if time.ticks_diff(now, last_pub) >= PUBLISH_INTERVAL_MS:
-        count = read_sensor()
-        payload = ujson.dumps({
-            "room_id":   ROOM_ID,
-            "room_name": ROOM_NAME,
-            "occupied":  count > 0,
-            "count":     count,
-            "timestamp": time.time(),
-        })
-        led.on()
-        ok = deliver(payload.encode())
-        led.off()
-        if ok:
-            print("[SensorB] delivered  count=" + str(count)
-                  + "  via=" + active_inbox.split("/")[3])
-        last_pub = time.ticks_ms()
+            # Ignore own frames
+            if orig == NODE_ID:
+                return
 
-    try:
-        client.check_msg()
-    except OSError:
-        print("[SensorB] MQTT error, reconnecting...")
-        time.sleep(5)
-        try:
-            client = mqtt_connect()
-        except Exception:
-            pass
+            key = "{}:{}".format(orig, msgid)
+            if self.seen_check_add(key):
+                return   # duplicate — already relayed
 
-    time.sleep_ms(100)
+            # Queue relay for main loop (keep IRQ short)
+            if ttl > 0:
+                self._fwd_queue.append((orig, msgid, ttl, typ, payload))
+
+        elif event == _IRQ_SCAN_DONE:
+            self.scan()
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    def run(self):
+        global _pir_motion_flag, _last_pir_high_ms
+
+        session_active    = False
+        reset_ultra_fsm(time.ticks_ms())
+        prev_count        = count
+
+        while True:
+            t = time.ticks_ms()
+
+            # ── Service BLE burst window ──────────────────────────────────────
+            self.advertise_burst_service()
+
+            # ── Drain relay queue (only when not currently advertising) ───────
+            if self._fwd_queue and not self._adv_active:
+                orig, msgid, ttl, typ, payload = self._fwd_queue.pop(0)
+                self.forward_ttl(orig, msgid, ttl, typ, payload)
+
+            # ── PIR ───────────────────────────────────────────────────────────
+            pir_val = pir.value()
+            if pir_val == 1:
+                _last_pir_high_ms = t
+            if _pir_motion_flag:
+                _pir_motion_flag  = False
+                _last_pir_high_ms = t
+
+            # ── Start/stop ultrasonic session ─────────────────────────────────
+            if not session_active and (
+                time.ticks_diff(t, _last_pir_high_ms) <= PIR_DEBOUNCE_MS or pir_val == 1
+            ):
+                session_active = True
+                print("Motion → counting ON")
+                reset_ultra_fsm(t)
+
+            if session_active:
+                ultrasonic_step(t)   # ~80 ms per call
+                if time.ticks_diff(t, _last_pir_high_ms) > PIR_QUIET_TIMEOUT_MS:
+                    session_active = False
+                    print("No motion → counting OFF")
+                    reset_ultra_fsm(t)
+            else:
+                try:
+                    machine.lightsleep(IDLE_SLEEP_MS)
+                except Exception:
+                    time.sleep_ms(IDLE_SLEEP_MS)
+
+            # ── Inject own count frame on change ──────────────────────────────
+            if count != prev_count:
+                prev_count = count
+                self.inject_count(count)
+
+# ── Boot ──────────────────────────────────────────────────────────────────────
+print("Warming up PIR...")
+time.sleep_ms(PIR_WARMUP_MS)
+print("Ready")
+
+node = SensorNode()
+node.run()

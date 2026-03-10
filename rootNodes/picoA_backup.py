@@ -1,25 +1,33 @@
-# Head Node B  –  Building A
-# Identical logic to picoA_primary.py. NODE_ID = "headB".
+# picoA_backup.py  –  Head Node (Backup), Building E2
+# Identical logic to picoA_primary.py — only NODE_ID differs.
+# Both primary and backup scan the same BLE airspace and publish independently.
+# The bridge and dashboard will reflect whichever node's message arrives last.
 
+import bluetooth
+import time
+import ujson
+import network
 import umqtt.simple as simple
 from machine import Pin
-import time
-import network
+from micropython import const
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-WIFI_SSID = "js"
+# ── BLE IRQ events ────────────────────────────────────────────────────────────
+_IRQ_SCAN_RESULT = const(5)
+_IRQ_SCAN_DONE   = const(6)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+WIFI_SSID     = "js"
 WIFI_PASSWORD = "12345678"
-BROKER_IP = "172.20.10.2"
-ROOM_ID = "E2-02-01"
-NODE_ID = "BackUp-E2"  # <── only line that differs from picoA_primary.py
+BROKER_IP     = "172.20.10.2"
+NODE_ID       = "BackUp-E2"    # <── only line that differs from picoA_primary.py
+CLIENT_ID     = ("Pi4-" + NODE_ID).encode()
 
-INBOX_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/data"
-OCCUPANCY_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/occupancy"
-ACK_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/ack"
-STATUS_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/status"
+STATUS_TOPIC  = "csc2106/{}/status".format(NODE_ID)
 
+SCAN_MS       = 10_000
+SEEN_MAX      = 300
 
-# ── WiFi ───────────────────────────────────────────────────────────────────────
+# ── WiFi ──────────────────────────────────────────────────────────────────────
 def connect_wifi(ssid, password, timeout=20):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -36,53 +44,134 @@ def connect_wifi(ssid, password, timeout=20):
             )
     print("WiFi connected:", wlan.ifconfig())
 
-
-connect_wifi(WIFI_SSID, WIFI_PASSWORD)
-
-led = Pin("LED", Pin.OUT)
-
-
-# ── MQTT callback ──────────────────────────────────────────────────────────────
-def on_message(topic, msg):
-    if topic.decode() != INBOX_TOPIC:
-        return
-    try:
-        led.on()
-        client.publish(OCCUPANCY_TOPIC.encode(), msg, qos=1)
-        client.publish(ACK_TOPIC.encode(), NODE_ID.encode(), qos=1)
-        print("[" + NODE_ID + "] forwarded + ACKed  " + str(len(msg)) + "B")
-    except Exception as e:
-        print("[" + NODE_ID + "] publish FAILED — no ACK sent:", e)
-    finally:
-        led.off()
-
-
-# ── MQTT connect ───────────────────────────────────────────────────────────────
+# ── MQTT ──────────────────────────────────────────────────────────────────────
 def mqtt_connect():
-    c = simple.MQTTClient(
-        client_id=("Pi4-" + NODE_ID).encode(),
-        server=BROKER_IP,
-        keepalive=60,
-    )
+    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, keepalive=60)
     c.set_last_will(STATUS_TOPIC.encode(), b"offline", retain=True, qos=1)
-    c.set_callback(on_message)
     c.connect()
     c.publish(STATUS_TOPIC.encode(), b"online", retain=True, qos=1)
-    c.subscribe(INBOX_TOPIC.encode(), qos=1)
-    print("[" + NODE_ID + "] ready — inbox: " + INBOX_TOPIC)
+    print("[{}] MQTT connected — broker {}".format(NODE_ID, BROKER_IP))
     return c
 
+# ── BLE frame parser ──────────────────────────────────────────────────────────
+def parse_frame(s):
+    try:
+        if not s.startswith("M1|"):
+            return None
+        parts = s.split("|", 5)
+        if len(parts) != 6:
+            return None
+        _, orig, msgid, ttl_s, typ, data = parts
+        return orig, msgid, int(ttl_s), typ, data
+    except Exception:
+        return None
 
+# ── Head node class ───────────────────────────────────────────────────────────
+class HeadNode:
+    def __init__(self, mqtt_client):
+        self.client  = mqtt_client
+        self.seen    = []
+        self._rx_buf = []
+
+        self.ble = bluetooth.BLE()
+        self.ble.active(True)
+        self.ble.irq(self._irq)
+        self.ble.gap_scan(SCAN_MS, 30000, 30000)
+        print("[{}] BLE scanning...".format(NODE_ID))
+
+    def _seen_check_add(self, key):
+        if key in self.seen:
+            return True
+        self.seen.append(key)
+        if len(self.seen) > SEEN_MAX:
+            del self.seen[0: len(self.seen) - SEEN_MAX]
+        return False
+
+    def _irq(self, event, data):
+        if event == _IRQ_SCAN_RESULT:
+            addr_type, addr, adv_type, rssi, adv_data = data
+            try:
+                raw = bytes(adv_data)
+                idx = raw.find(b"M1|")
+                if idx == -1:
+                    return
+                s = raw[idx:].decode("utf-8", "ignore").split("\x00")[0]
+            except Exception:
+                return
+
+            parsed = parse_frame(s)
+            if not parsed:
+                return
+
+            orig, msgid, ttl, typ, payload = parsed
+
+            if typ != "C":
+                return
+
+            key = "{}:{}".format(orig, msgid)
+            if self._seen_check_add(key):
+                return
+
+            self._rx_buf.append(payload)
+
+        elif event == _IRQ_SCAN_DONE:
+            self.ble.gap_scan(SCAN_MS, 30000, 30000)
+
+    def _publish(self, data_field):
+        try:
+            room_id, count_str = data_field.split(":", 1)
+            count = int(count_str)
+        except Exception:
+            print("[{}] bad data field: {}".format(NODE_ID, data_field))
+            return
+
+        topic = "csc2106/{}/classroom/{}/occupancy".format(NODE_ID, room_id)
+        msg   = ujson.dumps({
+            "room_id":   room_id,
+            "count":     count,
+            "occupied":  count > 0,
+            "timestamp": time.time(),
+        })
+        led.on()
+        try:
+            self.client.publish(topic.encode(), msg.encode(), qos=1)
+            print("[{}] → {} count={}".format(NODE_ID, room_id, count))
+        except OSError as e:
+            print("[{}] MQTT publish failed:".format(NODE_ID), e)
+            raise
+        finally:
+            led.off()
+
+    def run(self):
+        while True:
+            while self._rx_buf:
+                payload = self._rx_buf.pop(0)
+                try:
+                    self._publish(payload)
+                except OSError:
+                    print("[{}] MQTT error, reconnecting...".format(NODE_ID))
+                    time.sleep(5)
+                    try:
+                        self.client = mqtt_connect()
+                    except Exception:
+                        pass
+
+            try:
+                self.client.check_msg()
+            except OSError:
+                print("[{}] MQTT keepalive error, reconnecting...".format(NODE_ID))
+                time.sleep(5)
+                try:
+                    self.client = mqtt_connect()
+                except Exception:
+                    pass
+
+            time.sleep_ms(10)
+
+# ── Boot ──────────────────────────────────────────────────────────────────────
+connect_wifi(WIFI_SSID, WIFI_PASSWORD)
+led    = Pin("LED", Pin.OUT)
 client = mqtt_connect()
 
-# ── Main loop ──────────────────────────────────────────────────────────────────
-while True:
-    try:
-        client.wait_msg()
-    except OSError:
-        print("[" + NODE_ID + "] MQTT error, reconnecting...")
-        time.sleep(5)
-        try:
-            client = mqtt_connect()
-        except Exception:
-            pass
+node = HeadNode(client)
+node.run()
