@@ -38,12 +38,15 @@ log = logging.getLogger("bridge")
 # ── Config ─────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "10.236.91.21")
+MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "172.20.10.2")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-FIREBASE_CREDS = os.getenv("FIREBASE_CREDENTIALS_PATH", "iot-project-95f1e-firebase-adminsdk-fbsvc-a0a77f081e.json")
+FIREBASE_CREDS = os.getenv(
+    "FIREBASE_CREDENTIALS_PATH",
+    "iot-project-95f1e-firebase-adminsdk-fbsvc-a0a77f081e.json",
+)
 
-OCCUPANCY_TOPIC = "csc2106/classroom/+/occupancy"
-STATUS_TOPIC = "csc2106/classroom/+/status"
+OCCUPANCY_TOPIC = "csc2106/+/classroom/+/occupancy"
+STATUS_TOPIC = "csc2106/+/classroom/+/status"
 
 # ── Firebase ───────────────────────────────────────────────────────────────────
 if not os.path.isfile(FIREBASE_CREDS):
@@ -88,11 +91,11 @@ def on_message(_client, _userdata, msg):
     log.info("MSG  %s  ->  %s", topic, raw)
 
     parts = topic.split("/")
-    if len(parts) < 4:
+    if len(parts) < 5:
         return
 
-    room_id = parts[2]
-    msg_type = parts[3]
+    room_id = parts[3]
+    msg_type = parts[4]
 
     if msg_type == "occupancy":
         _handle_occupancy(room_id, raw)

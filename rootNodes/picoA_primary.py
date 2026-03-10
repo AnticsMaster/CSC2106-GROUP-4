@@ -14,16 +14,17 @@ import time
 import network
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-WIFI_SSID     = "js"
+WIFI_SSID = "js"
 WIFI_PASSWORD = "12345678"
-BROKER_IP     = "172.20.10.2"
-ROOM_ID       = "E2-02-01"
-NODE_ID       = "HeadNode-E2"
+BROKER_IP = "172.20.10.2"
+ROOM_ID = "E2-02-01"
+NODE_ID = "HeadNode-E2"
 
-INBOX_TOPIC     = "csc2106/classroom/" + ROOM_ID + "/" + NODE_ID + "/data"
-OCCUPANCY_TOPIC = "csc2106/classroom/" + ROOM_ID + "/occupancy"
-ACK_TOPIC       = "csc2106/classroom/" + ROOM_ID + "/ack"
-STATUS_TOPIC    = "csc2106/classroom/" + ROOM_ID + "/" + NODE_ID + "/status"
+INBOX_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/data"
+OCCUPANCY_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/occupancy"
+ACK_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/ack"
+STATUS_TOPIC = "csc2106/" + NODE_ID + "/classroom/" + ROOM_ID + "/status"
+
 
 # ── WiFi ───────────────────────────────────────────────────────────────────────
 def connect_wifi(ssid, password, timeout=20):
@@ -37,12 +38,16 @@ def connect_wifi(ssid, password, timeout=20):
                 break
             time.sleep(1)
         else:
-            raise RuntimeError("WiFi connection timed out — check SSID/password and that hotspot is ON")
+            raise RuntimeError(
+                "WiFi connection timed out — check SSID/password and that hotspot is ON"
+            )
     print("WiFi connected:", wlan.ifconfig())
+
 
 connect_wifi(WIFI_SSID, WIFI_PASSWORD)
 
 led = Pin("LED", Pin.OUT)
+
 
 # ── MQTT callback ──────────────────────────────────────────────────────────────
 # ACK is sent ONLY after occupancy publish succeeds.
@@ -60,6 +65,7 @@ def on_message(topic, msg):
     finally:
         led.off()
 
+
 # ── MQTT connect ───────────────────────────────────────────────────────────────
 def mqtt_connect():
     c = simple.MQTTClient(
@@ -74,6 +80,7 @@ def mqtt_connect():
     c.subscribe(INBOX_TOPIC.encode(), qos=1)
     print("[" + NODE_ID + "] ready — inbox: " + INBOX_TOPIC)
     return c
+
 
 client = mqtt_connect()
 
