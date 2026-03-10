@@ -7,11 +7,11 @@ import ujson
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-WIFI_SSID = "Danwifi"
-WIFI_PASSWORD = "wifiisgood"
-BROKER_IP = "10.236.91.21"
+WIFI_SSID = "js"
+WIFI_PASSWORD = "12345678"
+BROKER_IP = "172.20.10.2"
 ROOM_ID = "room-A"
-ROOM_NAME = "Room 2.1"
+ROOM_NAME = "E2-02-01"
 PUBLISH_TOPIC = "csc2106/classroom/" + ROOM_ID + "/occupancy"
 STATUS_TOPIC = "csc2106/classroom/" + ROOM_ID + "/status"
 PUBLISH_INTERVAL_MS = 15000  # publish every 15 seconds
