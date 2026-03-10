@@ -362,6 +362,32 @@ def coordinate(topic, payload):
         print(f"[COORD] Route B→A  →  {relay}")
         forward(relay, payload, qos=1)
 
+    # ── Building A head node status (E2-02-01) ─────────────────────────────────
+    elif topic == 'csc2106/classroom/E2-02-01/HeadNode-E2/status':
+        if msg == 'online':
+            print("[COORD] Building E2 HeadNode-E2 ONLINE")
+        elif msg == 'offline':
+            print("[COORD] Building E2 HeadNode-E2 OFFLINE — sensor will fail over to BackUp-E2")
+
+    elif topic == 'csc2106/classroom/E2-02-01/BackUp-E2/status':
+        if msg == 'online':
+            print("[COORD] Building E2 BackUp-E2 ONLINE")
+        elif msg == 'offline':
+            print("[COORD] Building E2 BackUp-E2 OFFLINE — sensor will fail over to HeadNode-E2")
+
+    # ── Building B head node status (E6-02-02) ─────────────────────────────────
+    elif topic == 'csc2106/classroom/E6-02-02/HeadNode-E6/status':
+        if msg == 'online':
+            print("[COORD] Building E6 HeadNode-E6 ONLINE")
+        elif msg == 'offline':
+            print("[COORD] Building E6 HeadNode-E6 OFFLINE — sensor will fail over to Backup-E6")
+
+    elif topic == 'csc2106/classroom/E6-02-02/Backup-E6/status':
+        if msg == 'online':
+            print("[COORD] Building E6 Backup-E6 ONLINE")
+        elif msg == 'offline':
+            print("[COORD] Building E6 Backup-E6 OFFLINE — sensor will fail over to HeadNode-E6")
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 ip = get_local_ip()
 print(f"[BROKER] Local IP: {ip}  (set this as BROKER_IP on all nodes)")
