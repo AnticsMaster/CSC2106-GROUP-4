@@ -26,14 +26,18 @@ ACK_TOPIC       = "csc2106/classroom/" + ROOM_ID + "/ack"
 STATUS_TOPIC    = "csc2106/classroom/" + ROOM_ID + "/" + NODE_ID + "/status"
 
 # ── WiFi ───────────────────────────────────────────────────────────────────────
-def connect_wifi(ssid, password):
+def connect_wifi(ssid, password, timeout=20):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
-        print("Connecting to WiFi...")
+        print("Connecting to WiFi: " + ssid)
         wlan.connect(ssid, password)
-        while not wlan.isconnected():
+        for _ in range(timeout):
+            if wlan.isconnected():
+                break
             time.sleep(1)
+        else:
+            raise RuntimeError("WiFi connection timed out — check SSID/password and that hotspot is ON")
     print("WiFi connected:", wlan.ifconfig())
 
 connect_wifi(WIFI_SSID, WIFI_PASSWORD)
@@ -59,7 +63,7 @@ def on_message(topic, msg):
 # ── MQTT connect ───────────────────────────────────────────────────────────────
 def mqtt_connect():
     c = simple.MQTTClient(
-        client_id=("PicoA-" + NODE_ID).encode(),
+        client_id=("Pi4-" + NODE_ID).encode(),
         server=BROKER_IP,
         keepalive=60,
     )
