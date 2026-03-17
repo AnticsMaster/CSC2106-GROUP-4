@@ -56,7 +56,7 @@ def connect_wifi(ssid, password, timeout=20):
 
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 def mqtt_connect():
-    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, keepalive=60)
+    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, keepalive=15)
     c.set_last_will(STATUS_TOPIC.encode(), b"offline", retain=True, qos=1)
     c.connect()
     c.publish(STATUS_TOPIC.encode(), b"online", retain=True, qos=1)

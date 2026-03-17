@@ -182,7 +182,16 @@ class BackupHeadNode:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self):
+        last_ping = time.ticks_ms()
         while True:
+            # Send keepalive ping every 30s to prevent broker timeout
+            if time.ticks_diff(time.ticks_ms(), last_ping) >= 30_000:
+                try:
+                    self.client.ping()
+                except OSError:
+                    pass
+                last_ping = time.ticks_ms()
+
             if self.is_active:
                 # Forward queued BLE frames to broker
                 while self._rx_buf:
