@@ -28,12 +28,24 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
   const [inputVal, setInputVal] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const borderColor =
+  const maxOcc = room.maxOccupancy ?? Infinity;
+  const status =
     room.deviceStatus === "offline"
+      ? "offline"
+      : room.count === 0
+        ? "available"
+        : room.count >= maxOcc
+          ? "full"
+          : "occupied";
+
+  const borderColor =
+    status === "offline"
       ? "border-gray-300"
-      : room.occupied
+      : status === "full"
         ? "border-red-300"
-        : "border-green-300";
+        : status === "occupied"
+          ? "border-orange-300"
+          : "border-green-300";
 
   function startEdit(e: React.MouseEvent) {
     e.stopPropagation();
@@ -52,7 +64,6 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
     try {
       await updateDoc(doc(db, "classrooms", room.roomId), {
         maxOccupancy: parsed,
-        occupied: room.count > parsed,
       });
     } catch (err) {
       console.error("Failed to update maxOccupancy:", err);
@@ -81,15 +92,36 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
           {room.roomName}
         </h3>
         <StatusBadge
-          occupied={room.occupied}
+          status={status === "offline" ? "available" : status}
           deviceStatus={room.deviceStatus}
         />
       </div>
 
       {/* Student count */}
       <div className="mb-4">
-        <p className="text-3xl font-bold text-slate-900">{room.count}</p>
-        <p className="text-sm text-slate-500">students detected</p>
+        <div className="flex items-baseline justify-between">
+          <p className="text-3xl font-bold text-slate-900">{room.count}</p>
+          {room.maxOccupancy !== undefined && (
+            <p className="text-sm text-slate-400">
+              / {room.maxOccupancy}
+            </p>
+          )}
+        </div>
+        <p className="mb-2 text-sm text-slate-500">students detected</p>
+        {room.maxOccupancy !== undefined && (
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className={`h-full rounded-full transition-all ${
+                status === "full"
+                  ? "bg-red-500"
+                  : status === "occupied"
+                    ? "bg-orange-400"
+                    : "bg-green-400"
+              }`}
+              style={{ width: `${Math.min((room.count / room.maxOccupancy) * 100, 100)}%` }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Max occupancy row */}
