@@ -170,7 +170,16 @@ class HeadNode:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self):
+        last_ping = time.ticks_ms()
         while True:
+            # Send keepalive ping every 10s to prevent broker timeout (keepalive=15)
+            if time.ticks_diff(time.ticks_ms(), last_ping) >= 10_000:
+                try:
+                    self.client.ping()
+                except OSError:
+                    pass
+                last_ping = time.ticks_ms()
+
             # Drain BLE receive buffer and publish each frame
             while self._rx_buf:
                 payload = self._rx_buf.pop(0)
