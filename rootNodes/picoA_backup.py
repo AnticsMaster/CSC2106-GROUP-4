@@ -16,9 +16,9 @@ _IRQ_SCAN_RESULT = const(5)
 _IRQ_SCAN_DONE   = const(6)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WIFI_SSID     = "js"
-WIFI_PASSWORD = "12345678"
-BROKER_IP     = "172.20.10.2"
+WIFI_SSID     = "Danwifi"
+WIFI_PASSWORD = "123456"
+BROKER_IP     = "10.71.189.30"
 NODE_ID       = "BackUp-E2"    # <── only line that differs from picoA_primary.py
 CLIENT_ID     = ("Pi4-" + NODE_ID).encode()
 
