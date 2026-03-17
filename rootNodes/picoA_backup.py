@@ -65,7 +65,12 @@ def mqtt_connect(on_msg_cb):
     print("[{}] Monitoring primary status: {}".format(NODE_ID, PRIMARY_STATUS_TOPIC))
     return c
 
-# ── BLE frame parser ──────────────────────────────────────────────────────────
+# ── BLE frame helpers ─────────────────────────────────────────────────────────
+def decode_room_id(code):
+    # Sensor Picos send a 3-char room code to fit within the 25-char BLE frame.
+    # "201" → "E2-02-01",  "603" → "E6-02-03"
+    return "E{}-02-{}".format(code[0], code[1:])
+
 def parse_frame(s):
     try:
         if not s.startswith("M1|"):
@@ -147,9 +152,11 @@ class BackupHeadNode:
 
     # ── MQTT publish ──────────────────────────────────────────────────────────
     def _publish(self, data_field):
+        # data_field format: "201:5"  (3-char room code + count)
         try:
-            room_id, count_str = data_field.split(":", 1)
-            count = int(count_str)
+            room_code, count_str = data_field.split(":", 1)
+            room_id = decode_room_id(room_code)   # "201" → "E2-02-01"
+            count   = int(count_str)
         except Exception:
             print("[{}] bad data field: {}".format(NODE_ID, data_field))
             return

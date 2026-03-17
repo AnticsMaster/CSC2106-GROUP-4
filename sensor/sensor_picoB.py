@@ -41,7 +41,10 @@ NODE_ID = ubinascii.hexlify(machine.unique_id()).decode()[-6:]
 #   Classroom 1 (closest to head node) → "E6-02-01"
 #   Classroom 2                         → "E6-02-02"
 #   Classroom 3 (furthest)              → "E6-02-03"
-ROOM_ID = "E6-02-01"
+ROOM_ID   = "E6-02-01"
+# ROOM_CODE is a 3-char compact form used inside BLE frames to save space.
+# Derived automatically: "E6-02-01" → "601",  "E6-02-03" → "603"
+ROOM_CODE = ROOM_ID[1] + ROOM_ID[-2:]   # building digit + room digits
 
 # ── PIR config ────────────────────────────────────────────────────────────────
 PIR_PIN              = 26
@@ -93,7 +96,8 @@ def adv_payload_name(name_str):
     return payload
 
 def frame_to_name(frame):
-    return frame[:25]   # BLE local name limited to 25 chars safely
+    return frame[:25]   # BLE adv payload = 31 bytes; 5 bytes overhead → 26 max name.
+                        # Using 25 to stay conservative.
 
 # ── Ultrasonic distance ───────────────────────────────────────────────────────
 def get_distance_cm(trig, echo):
@@ -232,14 +236,15 @@ class SensorNode:
 
     # ── Inject own count frame ────────────────────────────────────────────────
     def inject_count(self, c):
-        self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFFF
-        # Data field: "<ROOM_ID>:<count>" so head node knows which room
-        # e.g. "E6-02-01:5"  →  fits within 25-char frame limit
-        data  = "{}:{}".format(ROOM_ID, c)
+        # msgid capped at 0xFFF (4095) so it never exceeds 4 digits.
+        # With ROOM_CODE (3 chars) the worst-case frame is:
+        #   M1|abc123|4095|3|C|601:99  =  25 chars  ← fits safely
+        self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFF
+        data  = "{}:{}".format(ROOM_CODE, c)   # e.g. "601:5"
         frame = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "C", data)
         self.seen_check_add("{}:{}".format(NODE_ID, self._msgid_ctr))
         self.advertise_burst_start(frame)
-        print("TX  {} count={}".format(ROOM_ID, c))
+        print("TX  {} ({}) count={}".format(ROOM_ID, ROOM_CODE, c))
 
     # ── Forward a received frame (TTL-1) ──────────────────────────────────────
     def forward_ttl(self, orig, msgid, ttl, typ, data):
