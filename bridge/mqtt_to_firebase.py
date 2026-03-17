@@ -61,8 +61,15 @@ log.info("Firestore ready")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+DEFAULT_MAX_OCCUPANCY = 30
+
+
 def upsert_classroom(room_id: str, data: dict) -> None:
-    db.collection("classrooms").document(room_id).set(data, merge=True)
+    ref = db.collection("classrooms").document(room_id)
+    snap = ref.get()
+    if not snap.exists or snap.get("maxOccupancy") is None:
+        data.setdefault("maxOccupancy", DEFAULT_MAX_OCCUPANCY)
+    ref.set(data, merge=True)
 
 
 def append_history(data: dict) -> None:

@@ -28,6 +28,7 @@ export function useClassrooms() {
             lastUpdated: d.lastUpdated ?? null,
             deviceStatus: d.deviceStatus ?? "unknown",
             picoTimestamp: d.picoTimestamp,
+            maxOccupancy: d.maxOccupancy ?? 30,
           };
         });
         // Sort by room name for consistent ordering

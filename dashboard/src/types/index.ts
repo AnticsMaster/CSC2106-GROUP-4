@@ -8,6 +8,7 @@ export interface Classroom {
   lastUpdated: Timestamp | null;
   deviceStatus: "online" | "offline" | "unknown";
   picoTimestamp?: number;
+  maxOccupancy?: number;
 }
 
 /** A single data point from the occupancy_history Firestore collection. */
