@@ -172,7 +172,6 @@ class BackupHeadNode:
         msg   = ujson.dumps({
             "room_id":   room_id,
             "count":     count,
-            "occupied":  count > 0,
             "timestamp": time.time(),
         })
         led.on()

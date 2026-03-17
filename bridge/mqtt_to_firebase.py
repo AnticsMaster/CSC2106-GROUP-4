@@ -64,9 +64,10 @@ log.info("Firestore ready")
 DEFAULT_MAX_OCCUPANCY = 30
 
 
-def upsert_classroom(room_id: str, data: dict) -> None:
+def upsert_classroom(room_id: str, data: dict, snap=None) -> None:
     ref = db.collection("classrooms").document(room_id)
-    snap = ref.get()
+    if snap is None:
+        snap = ref.get()
     if not snap.exists or snap.get("maxOccupancy") is None:
         data.setdefault("maxOccupancy", DEFAULT_MAX_OCCUPANCY)
     ref.set(data, merge=True)
@@ -117,11 +118,17 @@ def _handle_occupancy(room_id: str, raw: str) -> None:
         log.error("[%s] Bad JSON: %s", room_id, raw)
         return
 
-    occupied = bool(data.get("occupied", False))
     count = int(data.get("count", 0))
     room_name = data.get("room_name", room_id)
     pico_ts = data.get("timestamp", 0)
     now = firestore.SERVER_TIMESTAMP
+
+    # Derive occupied from Firestore maxOccupancy (single read, reused for upsert)
+    snap = db.collection("classrooms").document(room_id).get()
+    max_occ = DEFAULT_MAX_OCCUPANCY
+    if snap.exists and snap.get("maxOccupancy") is not None:
+        max_occ = int(snap.get("maxOccupancy"))
+    occupied = count > max_occ
 
     upsert_classroom(
         room_id,
@@ -133,6 +140,7 @@ def _handle_occupancy(room_id: str, raw: str) -> None:
             "lastUpdated": now,
             "picoTimestamp": pico_ts,
         },
+        snap=snap,
     )
 
     append_history(
@@ -146,7 +154,7 @@ def _handle_occupancy(room_id: str, raw: str) -> None:
         }
     )
 
-    log.info("[%s] Firestore updated  occupied=%s  count=%d", room_id, occupied, count)
+    log.info("[%s] Firestore updated  occupied=%s  count=%d  max=%d", room_id, occupied, count, max_occ)
 
 
 def _handle_status(room_id: str, raw: str) -> None:

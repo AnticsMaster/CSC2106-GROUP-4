@@ -77,7 +77,6 @@ while True:
             {
                 "room_id": ROOM_ID,
                 "room_name": ROOM_NAME,
-                "occupied": sim_count > 0,
                 "count": sim_count,
                 "timestamp": time.time(),
             }
