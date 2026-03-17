@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import logging
+import threading
 
 import paho.mqtt.client as mqtt
 import firebase_admin
@@ -48,6 +49,26 @@ FIREBASE_CREDS = os.getenv(
 OCCUPANCY_TOPIC = "csc2106/+/classroom/+/occupancy"
 STATUS_TOPIC = "csc2106/+/classroom/+/status"
 
+# ── Capacity defaults ───────────────────────────────────────────────────────────
+# These seed Firestore on first run if no settings/capacity document exists yet.
+# After that, edit capacity live from the dashboard — changes apply immediately
+# without restarting the bridge.
+DEFAULT_CAPACITY = 20
+
+CAPACITY_DEFAULTS: dict[str, int] = {
+    "E2-02-01": 20,
+    "E2-02-02": 20,
+    "E2-02-03": 20,
+    "E6-02-01": 20,
+    "E6-02-02": 20,
+    "E6-02-03": 20,
+}
+
+# Live cache — updated by Firestore snapshot listener (runs in a background thread).
+# Protected by a lock since MQTT callbacks and the Firestore listener run concurrently.
+_capacity_cache: dict[str, int] = {}
+_capacity_lock  = threading.Lock()
+
 # ── Firebase ───────────────────────────────────────────────────────────────────
 if not os.path.isfile(FIREBASE_CREDS):
     log.error("Firebase credentials not found: %s", FIREBASE_CREDS)
@@ -58,6 +79,40 @@ cred = credentials.Certificate(FIREBASE_CREDS)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 log.info("Firestore ready")
+
+
+def _on_capacity_snapshot(doc_snapshot, _changes, _read_time):
+    """Called by Firestore whenever settings/capacity changes.
+    Runs in a background thread — updates _capacity_cache under lock."""
+    global _capacity_cache
+    for doc in doc_snapshot:
+        new_cache = {k: int(v) for k, v in doc.to_dict().items() if isinstance(v, (int, float))}
+        with _capacity_lock:
+            _capacity_cache = new_cache
+        log.info("Capacity settings refreshed from Firestore: %s", new_cache)
+
+
+def _init_capacity():
+    """Seed Firestore with defaults if no document exists, then start listener."""
+    cap_ref = db.collection("settings").document("capacity")
+    snap    = cap_ref.get()
+
+    if not snap.exists:
+        cap_ref.set(CAPACITY_DEFAULTS)
+        log.info("Created settings/capacity in Firestore with defaults: %s", CAPACITY_DEFAULTS)
+        with _capacity_lock:
+            _capacity_cache.update(CAPACITY_DEFAULTS)
+    else:
+        with _capacity_lock:
+            _capacity_cache.update({k: int(v) for k, v in snap.to_dict().items()})
+        log.info("Loaded capacity from Firestore: %s", _capacity_cache)
+
+    # Real-time listener — fires _on_capacity_snapshot on any change
+    cap_ref.on_snapshot(_on_capacity_snapshot)
+    log.info("Watching settings/capacity for live updates")
+
+
+_init_capacity()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -110,36 +165,59 @@ def _handle_occupancy(room_id: str, raw: str) -> None:
         log.error("[%s] Bad JSON: %s", room_id, raw)
         return
 
-    occupied = bool(data.get("occupied", False))
-    count = int(data.get("count", 0))
+    count     = int(data.get("count", 0))
     room_name = data.get("room_name", room_id)
-    pico_ts = data.get("timestamp", 0)
-    now = firestore.SERVER_TIMESTAMP
+    pico_ts   = data.get("timestamp", 0)
+    now       = firestore.SERVER_TIMESTAMP
+
+    # ── Capacity logic — live from Firestore (dashboard-editable) ─────────────
+    with _capacity_lock:
+        capacity = _capacity_cache.get(room_id, DEFAULT_CAPACITY)
+
+    if count == 0:
+        capacity_status = "empty"
+    elif count < capacity:
+        capacity_status = "occupied"
+    elif count == capacity:
+        capacity_status = "at_capacity"
+    else:
+        capacity_status = "over_capacity"
+
+    occupied    = count > 0
+    at_capacity = count >= capacity
 
     upsert_classroom(
         room_id,
         {
-            "roomId": room_id,
-            "roomName": room_name,
-            "occupied": occupied,
-            "count": count,
-            "lastUpdated": now,
-            "picoTimestamp": pico_ts,
+            "roomId":         room_id,
+            "roomName":       room_name,
+            "occupied":       occupied,
+            "count":          count,
+            "capacity":       capacity,
+            "atCapacity":     at_capacity,
+            "capacityStatus": capacity_status,   # "empty" | "occupied" | "at_capacity" | "over_capacity"
+            "lastUpdated":    now,
+            "picoTimestamp":  pico_ts,
         },
     )
 
     append_history(
         {
-            "roomId": room_id,
-            "roomName": room_name,
-            "occupied": occupied,
-            "count": count,
-            "timestamp": now,
-            "picoTimestamp": pico_ts,
+            "roomId":         room_id,
+            "roomName":       room_name,
+            "occupied":       occupied,
+            "count":          count,
+            "capacity":       capacity,
+            "capacityStatus": capacity_status,
+            "timestamp":      now,
+            "picoTimestamp":  pico_ts,
         }
     )
 
-    log.info("[%s] Firestore updated  occupied=%s  count=%d", room_id, occupied, count)
+    log.info(
+        "[%s] Firestore updated  count=%d/%d  status=%s",
+        room_id, count, capacity, capacity_status,
+    )
 
 
 def _handle_status(room_id: str, raw: str) -> None:
