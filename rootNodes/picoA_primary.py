@@ -27,7 +27,7 @@ _IRQ_SCAN_DONE   = const(6)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WIFI_SSID     = "Danwifi"
-WIFI_PASSWORD = "123456"
+WIFI_PASSWORD = "wifiisgood"
 BROKER_IP     = "10.71.189.30"
 NODE_ID       = "HeadNode-E2"
 CLIENT_ID     = ("Pi4-" + NODE_ID).encode()
