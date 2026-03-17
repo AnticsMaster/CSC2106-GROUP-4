@@ -174,7 +174,7 @@ def handle_connect(sock, pkt, pos):
     pos += 1  # protocol level (4 for MQTT 3.1.1)
     flags = pkt[pos]
     pos += 1
-    pos += 2  # keep-alive (2 bytes, ignored)
+    keepalive, pos = rd_u16(pkt, pos)  # keep-alive in seconds (0 = disabled)
 
     cid_b, pos = rd_str(pkt, pos)
     cid = cid_b.decode()
@@ -203,6 +203,8 @@ def handle_connect(sock, pkt, pos):
         will_msg=will_msg,
         will_retain=will_retain,
         will_qos=will_qos,
+        keepalive=keepalive,
+        last_seen=time.monotonic(),
     )
     sock.sendall(bytes([T_CONNACK << 4, 2, 0, 0]))
     print(f"[BROKER] CONNECT   {cid}")
@@ -477,6 +479,10 @@ try:
                     close_sock(sock)
                     continue
 
+                # Update last_seen for keepalive tracking
+                if sock in clients:
+                    clients[sock]['last_seen'] = time.monotonic()
+
                 buffers.setdefault(sock, bytearray())
                 buffers[sock].extend(data)
 
@@ -494,6 +500,18 @@ try:
                             pass
                         close_sock(sock)
                         break
+
+        # ── Keepalive timeout check ────────────────────────────────────────────
+        now_mono = time.monotonic()
+        for sock, info in list(clients.items()):
+            ka = info.get('keepalive', 0)
+            if ka > 0 and (now_mono - info['last_seen']) > ka * 1.5:
+                print(f"[BROKER] KEEPALIVE timeout: {info['id']} — publishing LWT")
+                try:
+                    poll.unregister(sock.fileno())
+                except Exception:
+                    pass
+                close_sock(sock)   # publishes LWT and cleans up
 
         # ── Heartbeat blink ────────────────────────────────────────────────────
         now = ticks_ms()
