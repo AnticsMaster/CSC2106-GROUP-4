@@ -26,9 +26,10 @@ _IRQ_SCAN_DONE   = const(6)
 WIFI_SSID     = "Danwifi"
 WIFI_PASSWORD = "wifiisgood"
 BROKER_IP     = "10.71.189.30"
-NODE_ID       = "BackUp-E2"
-PRIMARY_ID    = "HeadNode-E2"
-CLIENT_ID     = ("Pi4-" + NODE_ID).encode()
+NODE_ID         = "BackUp-E2"
+PRIMARY_ID      = "HeadNode-E2"
+CLIENT_ID       = ("Pi4-" + NODE_ID).encode()
+BUILDING_PREFIX = "2"   # only accept BLE frames from sensors with room code starting "2xx" (E2)
 
 STATUS_TOPIC         = "csc2106/{}/status".format(NODE_ID)
 PRIMARY_STATUS_TOPIC = "csc2106/{}/status".format(PRIMARY_ID)
@@ -139,6 +140,10 @@ class BackupHeadNode:
 
             orig, msgid, ttl, typ, payload = parsed
             if typ != "C":
+                return
+
+            # Filter: only process frames from this building's sensors
+            if not payload.startswith(BUILDING_PREFIX):
                 return
 
             key = "{}:{}".format(orig, msgid)

@@ -17,8 +17,9 @@ _IRQ_SCAN_DONE   = const(6)
 WIFI_SSID     = "Danwifi"
 WIFI_PASSWORD = "wifiisgood"
 BROKER_IP     = "10.71.189.30"
-NODE_ID       = "HeadNode-E6"  # <── only line that differs from picoA_primary.py
-CLIENT_ID     = ("Pi4-" + NODE_ID).encode()
+NODE_ID         = "HeadNode-E6"
+CLIENT_ID       = ("Pi4-" + NODE_ID).encode()
+BUILDING_PREFIX = "6"   # only accept BLE frames from sensors with room code starting "6xx" (EG)
 
 STATUS_TOPIC  = "csc2106/{}/status".format(NODE_ID)
 
@@ -109,6 +110,10 @@ class HeadNode:
             orig, msgid, ttl, typ, payload = parsed
 
             if typ != "C":
+                return
+
+            # Filter: only process frames from this building's sensors
+            if not payload.startswith(BUILDING_PREFIX):
                 return
 
             key = "{}:{}".format(orig, msgid)
