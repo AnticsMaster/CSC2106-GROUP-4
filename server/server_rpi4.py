@@ -350,29 +350,27 @@ def coordinate(topic, payload):
         else str(payload)
     )
 
-    # ── Root A health ──────────────────────────────────────────────────────────
-    if topic == "csc2106/devA/status":
+    # ── Root A health (HeadNode-E2) ────────────────────────────────────────────
+    if topic == "csc2106/HeadNode-E2/status":
         if msg == "online":
             cluster_A["online"] = True
             led_set(PIN_LED_A, True)
-            print("[COORD] Cluster A root ONLINE")
+            print("[COORD] Cluster A (HeadNode-E2) ONLINE")
         elif msg == "offline":
             cluster_A["online"] = False
             led_set(PIN_LED_A, False)
-            print("[COORD] Cluster A root OFFLINE — triggering election")
-            forward("csc2106/clusterA/election", b"ELECT", qos=1)
+            print("[COORD] Cluster A (HeadNode-E2) OFFLINE — backup will take over")
 
-    # ── Root B health ──────────────────────────────────────────────────────────
-    elif topic == "csc2106/devB/status":
+    # ── Root B health (HeadNode-E6) ────────────────────────────────────────────
+    elif topic == "csc2106/HeadNode-E6/status":
         if msg == "online":
             cluster_B["online"] = True
             led_set(PIN_LED_B, True)
-            print("[COORD] Cluster B root ONLINE")
+            print("[COORD] Cluster B (HeadNode-E6) ONLINE")
         elif msg == "offline":
             cluster_B["online"] = False
             led_set(PIN_LED_B, False)
-            print("[COORD] Cluster B root OFFLINE — triggering election")
-            forward("csc2106/clusterB/election", b"ELECT", qos=1)
+            print("[COORD] Cluster B (HeadNode-E6) OFFLINE — backup will take over")
 
     # ── Election results ───────────────────────────────────────────────────────
     elif topic == "csc2106/clusterA/elected":
@@ -403,39 +401,18 @@ def coordinate(topic, payload):
         print(f"[COORD] Route B→A  →  {relay}")
         forward(relay, payload, qos=1)
 
-    # ── Building A head node status (E2-02-01) ─────────────────────────────────
-    elif topic == "csc2106/HeadNode-E2/classroom/E2-02-01/status":
+    # ── Backup node status monitoring ──────────────────────────────────────────
+    elif topic == "csc2106/BackUp-E2/status":
         if msg == "online":
-            print("[COORD] Building E2 HeadNode-E2 ONLINE")
+            print("[COORD] Building E2 BackUp-E2 ONLINE (standby)")
         elif msg == "offline":
-            print(
-                "[COORD] Building E2 HeadNode-E2 OFFLINE — sensor will fail over to BackUp-E2"
-            )
+            print("[COORD] Building E2 BackUp-E2 OFFLINE")
 
-    elif topic == "csc2106/BackUp-E2/classroom/E2-02-01/status":
+    elif topic == "csc2106/Backup-E6/status":
         if msg == "online":
-            print("[COORD] Building E2 BackUp-E2 ONLINE")
+            print("[COORD] Building EG Backup-E6 ONLINE (standby)")
         elif msg == "offline":
-            print(
-                "[COORD] Building E2 BackUp-E2 OFFLINE — sensor will fail over to HeadNode-E2"
-            )
-
-    # ── Building B head node status (E6-02-02) ─────────────────────────────────
-    elif topic == "csc2106/HeadNode-E6/classroom/E6-02-02/status":
-        if msg == "online":
-            print("[COORD] Building E6 HeadNode-E6 ONLINE")
-        elif msg == "offline":
-            print(
-                "[COORD] Building E6 HeadNode-E6 OFFLINE — sensor will fail over to Backup-E6"
-            )
-
-    elif topic == "csc2106/Backup-E6/classroom/E6-02-02/status":
-        if msg == "online":
-            print("[COORD] Building E6 Backup-E6 ONLINE")
-        elif msg == "offline":
-            print(
-                "[COORD] Building E6 Backup-E6 OFFLINE — sensor will fail over to HeadNode-E6"
-            )
+            print("[COORD] Building EG Backup-E6 OFFLINE")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
