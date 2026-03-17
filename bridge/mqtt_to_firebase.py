@@ -38,7 +38,7 @@ log = logging.getLogger("bridge")
 # ── Config ─────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "172.20.10.2")
+MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "10.71.189.30")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 FIREBASE_CREDS = os.getenv(
     "FIREBASE_CREDENTIALS_PATH",

@@ -52,6 +52,7 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
     try {
       await updateDoc(doc(db, "classrooms", room.roomId), {
         maxOccupancy: parsed,
+        occupied: room.count > parsed,
       });
     } catch (err) {
       console.error("Failed to update maxOccupancy:", err);
