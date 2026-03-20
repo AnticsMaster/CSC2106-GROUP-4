@@ -21,6 +21,8 @@ import os
 import sys
 import time
 import logging
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 import paho.mqtt.client as mqtt
 import firebase_admin
@@ -40,6 +42,9 @@ load_dotenv()
 
 MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "10.71.189.30")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER", "bridge")
+MQTT_PASS = os.getenv("MQTT_PASS", "bridge-secret")
+AES_KEY = b"CSC2106-Group-04"  # 16 bytes — must match all Pico nodes
 FIREBASE_CREDS = os.getenv(
     "FIREBASE_CREDENTIALS_PATH",
     "iot-project-95f1e-firebase-adminsdk-fbsvc-a0a77f081e.json",
@@ -62,6 +67,12 @@ log.info("Firestore ready")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 DEFAULT_MAX_OCCUPANCY = 30
+
+
+def decrypt_payload(data: bytes) -> bytes:
+    """Decrypt AES-128-CBC payload from Pico nodes (IV prepended)."""
+    iv, ct = data[:16], data[16:]
+    return unpad(AES.new(AES_KEY, AES.MODE_CBC, iv).decrypt(ct), 16)
 
 
 def upsert_classroom(room_id: str, data: dict, snap=None) -> None:
@@ -95,9 +106,6 @@ def on_disconnect(_client, _userdata, rc):
 
 def on_message(_client, _userdata, msg):
     topic = msg.topic
-    raw = msg.payload.decode("utf-8", errors="replace")
-    log.info("MSG  %s  ->  %s", topic, raw)
-
     parts = topic.split("/")
     if len(parts) < 5:
         return
@@ -106,16 +114,21 @@ def on_message(_client, _userdata, msg):
     msg_type = parts[4]
 
     if msg_type == "occupancy":
-        _handle_occupancy(room_id, raw)
+        log.info("MSG  %s  ->  <encrypted %d bytes>", topic, len(msg.payload))
+        _handle_occupancy(room_id, msg.payload)
     elif msg_type == "status":
+        raw = msg.payload.decode("utf-8", errors="replace")
+        log.info("MSG  %s  ->  %s", topic, raw)
         _handle_status(room_id, raw)
 
 
-def _handle_occupancy(room_id: str, raw: str) -> None:
+def _handle_occupancy(room_id: str, raw_bytes: bytes) -> None:
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        log.error("[%s] Bad JSON: %s", room_id, raw)
+        decrypted = decrypt_payload(raw_bytes)
+        data = json.loads(decrypted)
+        log.info("[%s] Decrypted: %s", room_id, decrypted.decode())
+    except Exception as e:
+        log.error("[%s] Decrypt/parse error: %s", room_id, e)
         return
 
     count = int(data.get("count", 0))
@@ -175,6 +188,7 @@ def main():
     log.info("Broker: %s:%d", MQTT_BROKER_IP, MQTT_PORT)
 
     client = mqtt.Client(client_id="bridge", protocol=mqtt.MQTTv311)
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message

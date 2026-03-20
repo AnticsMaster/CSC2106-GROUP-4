@@ -4,6 +4,8 @@
 import bluetooth
 import time
 import ujson
+import os
+import ucryptolib
 import network
 import umqtt.simple as simple
 from machine import Pin
@@ -17,6 +19,9 @@ _IRQ_SCAN_DONE   = const(6)
 WIFI_SSID     = "Danwifi"
 WIFI_PASSWORD = "wifiisgood"
 BROKER_IP     = "10.71.189.30"
+MQTT_USER     = b"Pi4-HeadNode-E6"
+MQTT_PASS     = b"e6-secret"
+AES_KEY       = b"CSC2106-Group-04"  # 16 bytes — must match bridge
 NODE_ID         = "HeadNode-E6"
 CLIENT_ID       = ("Pi4-" + NODE_ID).encode()
 BUILDING_PREFIX = "6"   # only accept BLE frames from sensors with room code starting "6xx" (EG)
@@ -45,12 +50,23 @@ def connect_wifi(ssid, password, timeout=20):
 
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 def mqtt_connect():
-    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, keepalive=15)
+    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP,
+                          user=MQTT_USER, password=MQTT_PASS, keepalive=15)
     c.set_last_will(STATUS_TOPIC.encode(), b"offline", retain=True, qos=1)
     c.connect()
     c.publish(STATUS_TOPIC.encode(), b"online", retain=True, qos=1)
     print("[{}] MQTT connected — broker {}".format(NODE_ID, BROKER_IP))
     return c
+
+# ── AES-CBC encryption ────────────────────────────────────────────────────────
+def encrypt_payload(plaintext_str):
+    """Encrypt a string with AES-128-CBC. Returns IV + ciphertext (bytes)."""
+    iv = os.urandom(16)
+    data = plaintext_str.encode()
+    pad = 16 - (len(data) % 16)
+    data += bytes([pad] * pad)
+    cipher = ucryptolib.aes(AES_KEY, 2, iv)
+    return iv + cipher.encrypt(data)
 
 # ── BLE frame helpers ─────────────────────────────────────────────────────────
 def decode_room_id(code):
@@ -143,7 +159,7 @@ class HeadNode:
         })
         led.on()
         try:
-            self.client.publish(topic.encode(), msg.encode(), qos=1)
+            self.client.publish(topic.encode(), encrypt_payload(msg), qos=1)
             print("[{}] → {} count={}".format(NODE_ID, room_id, count))
         except OSError as e:
             print("[{}] MQTT publish failed:".format(NODE_ID), e)

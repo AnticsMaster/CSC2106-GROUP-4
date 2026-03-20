@@ -51,6 +51,43 @@ T_PINGREQ = 12
 T_PINGRESP = 13
 T_DISCONNECT = 14
 
+# ── Security ───────────────────────────────────────────────────────────────────
+# client_id (bytes) → required password (bytes)
+# Any client not in this dict, or with wrong password, gets CONNACK rc=5
+ALLOWED_CLIENTS = {
+    b"Pi4-HeadNode-E2": b"e2-secret",
+    b"Pi4-BackUp-E2":   b"e2-secret",
+    b"Pi4-HeadNode-E6": b"e6-secret",
+    b"Pi4-Backup-E6":   b"e6-secret",
+    b"bridge":          b"bridge-secret",
+}
+
+# Publish ACL: client_id (str) → list of topic patterns they may publish to
+PUBLISH_ACL = {
+    "Pi4-HeadNode-E2": ["csc2106/HeadNode-E2/#"],
+    "Pi4-BackUp-E2":   ["csc2106/BackUp-E2/#",  "csc2106/HeadNode-E2/#"],  # failover
+    "Pi4-HeadNode-E6": ["csc2106/HeadNode-E6/#"],
+    "Pi4-Backup-E6":   ["csc2106/Backup-E6/#",  "csc2106/HeadNode-E6/#"],  # failover
+    "bridge":          [],  # bridge only subscribes
+}
+
+# Subscribe ACL: client_id (str) → list of exact topic filters they may subscribe to
+SUBSCRIBE_ACL = {
+    "Pi4-HeadNode-E2": [],
+    "Pi4-BackUp-E2":   ["csc2106/HeadNode-E2/status"],
+    "Pi4-HeadNode-E6": [],
+    "Pi4-Backup-E6":   ["csc2106/HeadNode-E6/status"],
+    "bridge":          ["csc2106/+/classroom/+/occupancy", "csc2106/+/classroom/+/status"],
+}
+
+
+def pub_acl_ok(client_id, topic):
+    return any(topic_match(pat, topic) for pat in PUBLISH_ACL.get(client_id, []))
+
+
+def sub_acl_ok(client_id, topic_filter):
+    return topic_filter in SUBSCRIBE_ACL.get(client_id, [])
+
 # ── Broker state ───────────────────────────────────────────────────────────────
 buffers = {}  # sock → bytearray
 clients = {}  # sock → {id, subs:[(topic,qos)], will_topic, will_msg,
@@ -191,10 +228,19 @@ def handle_connect(sock, pkt, pos):
         wm, pos = rd_str(pkt, pos)
         will_msg = bytes(wm)
 
+    username = None
+    password = None
     if flags & 0x80:
-        _, pos = rd_str(pkt, pos)  # username (skip)
+        username, pos = rd_str(pkt, pos)
     if flags & 0x40:
-        _, pos = rd_str(pkt, pos)  # password (skip)
+        password, pos = rd_str(pkt, pos)
+
+    # ── Auth: allowlist + password check ──────────────────────────────────────
+    expected = ALLOWED_CLIENTS.get(cid_b)
+    if expected is None or password != expected:
+        print(f"[BROKER] AUTH FAILED  {cid}  — rejected")
+        sock.sendall(bytes([T_CONNACK << 4, 2, 0, 5]))  # rc=5 = not authorized
+        raise PermissionError("auth failed")
 
     clients[sock] = dict(
         id=cid,
@@ -207,7 +253,7 @@ def handle_connect(sock, pkt, pos):
         last_seen=time.monotonic(),
     )
     sock.sendall(bytes([T_CONNACK << 4, 2, 0, 0]))
-    print(f"[BROKER] CONNECT   {cid}")
+    print(f"[BROKER] CONNECT   {cid}  (authenticated)")
 
 
 def handle_publish(sock, fh_flags, pkt, pos, end):
@@ -222,7 +268,16 @@ def handle_publish(sock, fh_flags, pkt, pos, end):
         pid, pos = rd_u16(pkt, pos)
 
     payload = bytes(pkt[pos:end])
-    print(f"[BROKER] PUBLISH   {topic}  →  {payload}")
+
+    # ── Publish ACL ───────────────────────────────────────────────────────────
+    cid = clients[sock]["id"]
+    if not pub_acl_ok(cid, topic):
+        print(f"[BROKER] ACL DENY  {cid}  publish→{topic}")
+        if qos == 1:
+            sock.sendall(bytes([T_PUBACK << 4, 2, pid >> 8, pid & 0xFF]))
+        return
+
+    print(f"[BROKER] PUBLISH   {topic}  ({len(payload)} bytes)")
 
     # Update retained store
     if retain:
@@ -244,14 +299,22 @@ def handle_subscribe(sock, pkt, pos, end):
     pid, pos = rd_u16(pkt, pos)
     granted = []
 
+    cid = clients[sock]["id"]
     while pos < end:
         t_b, pos = rd_str(pkt, pos)
         q = pkt[pos]
         pos += 1
         t = t_b.decode()
+
+        # ── Subscribe ACL ─────────────────────────────────────────────────────
+        if not sub_acl_ok(cid, t):
+            print(f"[BROKER] ACL DENY  {cid}  subscribe→{t}")
+            granted.append(0x80)  # SUBACK failure code
+            continue
+
         clients[sock]["subs"].append((t, q))
         granted.append(min(q, 1))
-        print(f"[BROKER] SUBSCRIBE {clients[sock]['id']}  →  {t}  qos={q}")
+        print(f"[BROKER] SUBSCRIBE {cid}  →  {t}  qos={q}")
 
         # Deliver any matching retained messages
         for rt, rp in retained.items():
