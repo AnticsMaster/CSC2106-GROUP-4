@@ -140,7 +140,7 @@ class HeadNode:
 
             orig, msgid, ttl, typ, payload = parsed
 
-            if typ != "C":
+            if typ not in ("C", "H"):
                 return
 
             # Filter: only process frames from this building's sensors
@@ -151,18 +151,18 @@ class HeadNode:
             if self._seen_check_add(key):
                 return   # duplicate — already processed
 
-            # Queue the data field for main-loop MQTT publish
-            self._rx_buf.append(payload)
+            # Queue (type, data) for main-loop MQTT publish
+            self._rx_buf.append((typ, payload))
 
         elif event == _IRQ_SCAN_DONE:
             self.ble.gap_scan(SCAN_MS, 30000, 30000)
 
     # ── Publish occupancy to MQTT broker ──────────────────────────────────────
     def _publish(self, data_field):
-        # data_field format: "201:5"  (3-char room code + count)
+        # data_field format: "2201:5"  (4-char room code + count)
         try:
             room_code, count_str = data_field.split(":", 1)
-            room_id = decode_room_id(room_code)   # "201" → "E2-02-01"
+            room_id = decode_room_id(room_code)   # "2201" → "E2-02-01"
             count   = int(count_str)
         except Exception:
             print("[{}] bad data field: {}".format(NODE_ID, data_field))
@@ -184,6 +184,38 @@ class HeadNode:
         finally:
             led.off()
 
+    # ── Publish heatmap to MQTT broker ────────────────────────────────────────
+    def _publish_heatmap(self, data_field):
+        # data_field format: "2201:A5"  (4-char room code + 2-hex packed byte)
+        try:
+            room_code, hex_str = data_field.split(":", 1)
+            room_id = decode_room_id(room_code)   # "2201" → "E2-02-01"
+            packed  = int(hex_str, 16)
+        except Exception:
+            print("[{}] bad heatmap field: {}".format(NODE_ID, data_field))
+            return
+
+        z1 = (packed >> 6) & 0x3
+        z2 = (packed >> 4) & 0x3
+        z3 = (packed >> 2) & 0x3
+        z4 =  packed       & 0x3
+
+        topic = "csc2106/{}/classroom/{}/heatmap".format(NODE_ID, room_id)
+        msg   = ujson.dumps({
+            "room_id":   room_id,
+            "zones":     [z1, z2, z3, z4],
+            "timestamp": time.time(),
+        })
+        led.on()
+        try:
+            self.client.publish(topic.encode(), encrypt_payload(msg), qos=1)
+            print("[{}] HMAP → {} zones=[{},{},{},{}]".format(NODE_ID, room_id, z1, z2, z3, z4))
+        except OSError as e:
+            print("[{}] MQTT heatmap publish failed:".format(NODE_ID), e)
+            raise
+        finally:
+            led.off()
+
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self):
         last_ping = time.ticks_ms()
@@ -198,9 +230,12 @@ class HeadNode:
 
             # Drain BLE receive buffer and publish each frame
             while self._rx_buf:
-                payload = self._rx_buf.pop(0)
+                typ, payload = self._rx_buf.pop(0)
                 try:
-                    self._publish(payload)
+                    if typ == "C":
+                        self._publish(payload)
+                    elif typ == "H":
+                        self._publish_heatmap(payload)
                 except OSError:
                     print("[{}] MQTT error, reconnecting...".format(NODE_ID))
                     time.sleep(5)

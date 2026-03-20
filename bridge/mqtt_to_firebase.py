@@ -51,7 +51,8 @@ FIREBASE_CREDS = os.getenv(
 )
 
 OCCUPANCY_TOPIC = "csc2106/+/classroom/+/occupancy"
-STATUS_TOPIC = "csc2106/+/classroom/+/status"
+HEATMAP_TOPIC   = "csc2106/+/classroom/+/heatmap"
+STATUS_TOPIC    = "csc2106/+/classroom/+/status"
 
 # ── Firebase ───────────────────────────────────────────────────────────────────
 if not os.path.isfile(FIREBASE_CREDS):
@@ -95,8 +96,9 @@ def on_connect(client, _userdata, _flags, rc):
         return
     log.info("MQTT connected to %s:%d", MQTT_BROKER_IP, MQTT_PORT)
     client.subscribe(OCCUPANCY_TOPIC, qos=1)
+    client.subscribe(HEATMAP_TOPIC, qos=1)
     client.subscribe(STATUS_TOPIC, qos=1)
-    log.info("Subscribed: %s, %s", OCCUPANCY_TOPIC, STATUS_TOPIC)
+    log.info("Subscribed: %s, %s, %s", OCCUPANCY_TOPIC, HEATMAP_TOPIC, STATUS_TOPIC)
 
 
 def on_disconnect(_client, _userdata, rc):
@@ -116,6 +118,9 @@ def on_message(_client, _userdata, msg):
     if msg_type == "occupancy":
         log.info("MSG  %s  ->  <encrypted %d bytes>", topic, len(msg.payload))
         _handle_occupancy(room_id, msg.payload)
+    elif msg_type == "heatmap":
+        log.info("MSG  %s  ->  <encrypted %d bytes>", topic, len(msg.payload))
+        _handle_heatmap(room_id, msg.payload)
     elif msg_type == "status":
         raw = msg.payload.decode("utf-8", errors="replace")
         log.info("MSG  %s  ->  %s", topic, raw)
@@ -168,6 +173,45 @@ def _handle_occupancy(room_id: str, raw_bytes: bytes) -> None:
     )
 
     log.info("[%s] Firestore updated  occupied=%s  count=%d  max=%d", room_id, occupied, count, max_occ)
+
+
+def _handle_heatmap(room_id: str, raw_bytes: bytes) -> None:
+    try:
+        decrypted = decrypt_payload(raw_bytes)
+        data = json.loads(decrypted)
+        log.info("[%s] Heatmap decrypted: %s", room_id, decrypted.decode())
+    except Exception as e:
+        log.error("[%s] Heatmap decrypt/parse error: %s", room_id, e)
+        return
+
+    zones = data.get("zones", [0, 0, 0, 0])   # list of 4 scores (0–3)
+    pico_ts = data.get("timestamp", 0)
+    now = firestore.SERVER_TIMESTAMP
+
+    # Map numeric scores to readable labels for the dashboard
+    SCORE_LABELS = {0: "none", 1: "low", 2: "medium", 3: "high"}
+    zone_labels = [SCORE_LABELS.get(s, "none") for s in zones]
+
+    heatmap_doc = {
+        "zones": zones,
+        "zoneLabels": zone_labels,
+        "lastUpdated": now,
+        "picoTimestamp": pico_ts,
+    }
+
+    # Merge into classrooms/<room_id> so the dashboard can read it alongside occupancy
+    upsert_classroom(room_id, {"heatmap": heatmap_doc})
+
+    # Also append to heatmap_history for time-series analytics
+    db.collection("heatmap_history").add({
+        "roomId": room_id,
+        "zones": zones,
+        "zoneLabels": zone_labels,
+        "timestamp": now,
+        "picoTimestamp": pico_ts,
+    })
+
+    log.info("[%s] Heatmap Firestore updated  zones=%s", room_id, zones)
 
 
 def _handle_status(room_id: str, raw: str) -> None:

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { collection, onSnapshot, query } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import type { Classroom } from "../types";
+import type { Classroom, HeatmapData } from "../types";
 
 /**
  * Real-time listener for the `classrooms` Firestore collection.
@@ -20,6 +20,17 @@ export function useClassrooms() {
       (snapshot) => {
         const rooms: Classroom[] = snapshot.docs.map((doc) => {
           const d = doc.data();
+          // Pull heatmap sub-document if it exists
+          const rawHeatmap = d.heatmap;
+          const heatmap: HeatmapData | undefined = rawHeatmap
+            ? {
+                zones: rawHeatmap.zones ?? [0, 0, 0, 0],
+                zoneLabels: rawHeatmap.zoneLabels ?? ["none", "none", "none", "none"],
+                lastUpdated: rawHeatmap.lastUpdated ?? null,
+                picoTimestamp: rawHeatmap.picoTimestamp,
+              }
+            : undefined;
+
           return {
             roomId: d.roomId ?? doc.id,
             roomName: d.roomName ?? doc.id,
@@ -29,6 +40,7 @@ export function useClassrooms() {
             deviceStatus: d.deviceStatus ?? "unknown",
             picoTimestamp: d.picoTimestamp,
             maxOccupancy: d.maxOccupancy ?? 30,
+            heatmap,
           };
         });
         // Sort by room name for consistent ordering

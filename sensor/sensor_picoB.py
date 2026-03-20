@@ -1,8 +1,9 @@
 # sensor_picoB.py  –  Sensor Pico, Building E6
 #
-# Dual role:
-#   1. PIR + ultrasonic occupancy counting (own classroom)
-#   2. BLE mesh relay — forwards other classrooms' frames toward the head node
+# Triple role:
+#   1. Door PIR + 2× ultrasonic for entrance/exit counting
+#   2. 4× heatmap PIRs (one per zone) for classroom activity heatmap
+#   3. BLE mesh relay — forwards other classrooms' frames toward the head node
 #
 # Topology (E6 building):
 #   Classroom 3 → Classroom 2 → Classroom 1 → Head Node
@@ -47,11 +48,22 @@ ROOM_ID   = "E6-02-01"
 ROOM_CODE = ROOM_ID[1] + ROOM_ID[4] + ROOM_ID[-2:]   # building + floor + room digits
 
 # ── PIR config ────────────────────────────────────────────────────────────────
-PIR_PIN              = 26
+PIR_PIN              = 28   # entrance door PIR (moved from GP26 to free it for heatmap)
 PIR_WARMUP_MS        = 2000
 PIR_DEBOUNCE_MS      = 200
 PIR_QUIET_TIMEOUT_MS = 1500
 IDLE_SLEEP_MS        = 200
+
+# ── Heatmap PIR config ────────────────────────────────────────────────────────
+# 4 PIR sensors mounted on the ceiling, one per zone.
+# Zone layout (top-down view):   Z1(GP0)  | Z2(GP6)
+#                                Z3(GP8)  | Z4(GP26)
+# ↓ Change HEATMAP_INTERVAL_MS to adjust how often a report is sent (default 30s).
+# ↓ Change thresholds to tune how many hits map to each score level.
+HPIR_PINS           = [0, 6, 8, 26]  # GP pins for Zone 1–4
+HEATMAP_INTERVAL_MS = 30_000          # send one "H" frame per interval
+ZONE_THRESH_LOW     = 2               # 1–2 hits  → score 1 (low)
+ZONE_THRESH_MED     = 5               # 3–5 hits  → score 2 (medium); 6+ → score 3 (high)
 
 # ── Ultrasonic config ─────────────────────────────────────────────────────────
 TRIG1_PIN             = 3
@@ -67,11 +79,17 @@ INTER_SENSOR_DELAY_MS = 60
 LOOP_DELAY_MS         = 20
 
 # ── Hardware ──────────────────────────────────────────────────────────────────
-pir   = Pin(PIR_PIN,   Pin.IN)
+pir   = Pin(PIR_PIN,   Pin.IN)          # entrance door PIR (GP28)
 TRIG1 = Pin(TRIG1_PIN, Pin.OUT)
 ECHO1 = Pin(ECHO1_PIN, Pin.IN)
 TRIG2 = Pin(TRIG2_PIN, Pin.OUT)
 ECHO2 = Pin(ECHO2_PIN, Pin.IN)
+
+# Heatmap PIR pins — one per zone
+hpir0 = Pin(HPIR_PINS[0], Pin.IN)      # Zone 1 (GP0)
+hpir1 = Pin(HPIR_PINS[1], Pin.IN)      # Zone 2 (GP6)
+hpir2 = Pin(HPIR_PINS[2], Pin.IN)      # Zone 3 (GP8)
+hpir3 = Pin(HPIR_PINS[3], Pin.IN)      # Zone 4 (GP26)
 
 # ── BLE frame helpers ─────────────────────────────────────────────────────────
 def make_frame(orig, msgid, ttl, typ, data):
@@ -188,6 +206,31 @@ try:
 except Exception:
     pass
 
+# ── Heatmap zone tracking ─────────────────────────────────────────────────────
+# Each IRQ handler increments that zone's hit counter.
+# The main loop reads and resets counters every HEATMAP_INTERVAL_MS.
+_zone_hits      = [0, 0, 0, 0]
+_last_heatmap_ms = 0
+
+def _z0_irq(pin): _zone_hits[0] += 1
+def _z1_irq(pin): _zone_hits[1] += 1
+def _z2_irq(pin): _zone_hits[2] += 1
+def _z3_irq(pin): _zone_hits[3] += 1
+
+for _pin, _handler in ((hpir0, _z0_irq), (hpir1, _z1_irq),
+                        (hpir2, _z2_irq), (hpir3, _z3_irq)):
+    try:
+        _pin.irq(trigger=Pin.IRQ_RISING, handler=_handler)
+    except Exception:
+        pass
+
+def _zone_score(hits):
+    """Map raw hit count in window to display score 0–3."""
+    if hits == 0:                    return 0
+    elif hits <= ZONE_THRESH_LOW:    return 1
+    elif hits <= ZONE_THRESH_MED:    return 2
+    else:                            return 3
+
 # ── Mesh node class ───────────────────────────────────────────────────────────
 class SensorNode:
     def __init__(self):
@@ -246,6 +289,19 @@ class SensorNode:
         self.advertise_burst_start(frame)
         print("TX  {} ({}) count={}".format(ROOM_ID, ROOM_CODE, c))
 
+    # ── Inject heatmap frame ──────────────────────────────────────────────────
+    def inject_heatmap(self, scores):
+        # Pack 4 zone scores (0–3 each, 2 bits each) into 1 byte → 2 hex chars.
+        # bits[7:6]=Z1, bits[5:4]=Z2, bits[3:2]=Z3, bits[1:0]=Z4
+        # Worst-case frame: M1|abc123|4095|3|H|6201:FF = 26 chars ✓
+        self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFF
+        packed = (scores[0] << 6) | (scores[1] << 4) | (scores[2] << 2) | scores[3]
+        data   = "{}:{:02X}".format(ROOM_CODE, packed)
+        frame  = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "H", data)
+        self.seen_check_add("{}:{}".format(NODE_ID, self._msgid_ctr))
+        self.advertise_burst_start(frame)
+        print("TX  HMAP {} zones={}".format(ROOM_CODE, scores))
+
     # ── Forward a received frame (TTL-1) ──────────────────────────────────────
     def forward_ttl(self, orig, msgid, ttl, typ, data):
         ttl2 = ttl - 1
@@ -274,8 +330,8 @@ class SensorNode:
 
             orig, msgid, ttl, typ, payload = parsed
 
-            # Only handle count frames
-            if typ != "C":
+            # Only relay count ("C") and heatmap ("H") frames
+            if typ not in ("C", "H"):
                 return
 
             # Ignore own frames
@@ -295,11 +351,12 @@ class SensorNode:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self):
-        global _pir_motion_flag, _last_pir_high_ms
+        global _pir_motion_flag, _last_pir_high_ms, _last_heatmap_ms
 
         session_active    = False
         reset_ultra_fsm(time.ticks_ms())
         prev_count        = count
+        _last_heatmap_ms  = time.ticks_ms()
 
         while True:
             t = time.ticks_ms()
@@ -344,6 +401,14 @@ class SensorNode:
             if count != prev_count:
                 prev_count = count
                 self.inject_count(count)
+
+            # ── Heatmap heartbeat (every 30 s) ────────────────────────────────
+            if time.ticks_diff(t, _last_heatmap_ms) >= HEATMAP_INTERVAL_MS:
+                scores = [_zone_score(_zone_hits[i]) for i in range(4)]
+                _zone_hits[0] = _zone_hits[1] = _zone_hits[2] = _zone_hits[3] = 0
+                _last_heatmap_ms = t
+                if not self._adv_active:
+                    self.inject_heatmap(scores)
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 print("Warming up PIR...")

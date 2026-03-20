@@ -3,6 +3,7 @@ import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { Classroom } from "../types";
 import { StatusBadge } from "./StatusBadge";
+import { HeatmapMini } from "./HeatmapGrid";
 
 function formatTime(ts: Classroom["lastUpdated"]): string {
   if (!ts) return "N/A";
@@ -173,6 +174,13 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
           </span>
         )}
       </div>
+
+      {/* Heatmap mini preview — only shown when data is available */}
+      {room.heatmap && (
+        <div className="mb-3 border-t border-slate-100 pt-3" onClick={(e) => e.stopPropagation()}>
+          <HeatmapMini heatmap={room.heatmap} />
+        </div>
+      )}
 
       {/* Footer meta */}
       <div className="flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-400">

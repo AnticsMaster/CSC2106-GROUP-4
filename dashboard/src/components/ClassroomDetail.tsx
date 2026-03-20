@@ -3,6 +3,7 @@ import { useOccupancyHistory } from "../hooks/useOccupancyHistory";
 import { generateForecast, predictOccupancy } from "../lib/prediction";
 import type { Classroom } from "../types";
 import { OccupancyChart } from "./OccupancyChart";
+import { HeatmapGrid } from "./HeatmapGrid";
 import { PredictionBadge } from "./PredictionBadge";
 import { StatusBadge } from "./StatusBadge";
 
@@ -132,6 +133,11 @@ export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
                             )}
                         </div>
                     )}
+
+                    {/* Heatmap */}
+                    <div className="mb-5">
+                        <HeatmapGrid heatmap={room.heatmap} />
+                    </div>
 
                     {/* Chart */}
                     <div className="mb-4">
