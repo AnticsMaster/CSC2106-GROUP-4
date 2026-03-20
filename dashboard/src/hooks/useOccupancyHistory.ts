@@ -17,7 +17,7 @@ import type { OccupancyDataPoint } from "../types";
  */
 export function useOccupancyHistory(
   roomId: string | null,
-  maxPoints = 100,
+  maxPoints = 6000,
 ) {
   const [data, setData] = useState<OccupancyDataPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -33,9 +33,16 @@ export function useOccupancyHistory(
     setLoading(true);
     setError(null);
 
+    const now = new Date();
+    const twentyFourHoursAgo = new Timestamp(
+      Math.floor((now.getTime() - 24 * 60 * 60 * 1000) / 1000),
+      0
+    );
+
     const q = query(
       collection(db, "occupancy_history"),
       where("roomId", "==", roomId),
+      where("timestamp", ">=", twentyFourHoursAgo),
       orderBy("timestamp", "desc"),
       limit(maxPoints),
     );

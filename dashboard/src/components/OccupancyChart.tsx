@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -40,21 +41,64 @@ export function OccupancyChart({
   }
 
   // Combine history + forecast, marking forecast points
-  const chartData = [
-    ...history.map((p) => ({ ...p, type: "actual" as const })),
-    ...forecast.map((p) => ({ ...p, type: "forecast" as const })),
-  ];
+  const chartData = useMemo(() => {
+    // We want the actual count and forecast count to be in separate keys
+    // so they can be styled differently as separate Area components.
+    const actualPoints = history.map((p) => ({
+      ...p,
+      actualCount: p.count as number | null,
+      forecastCount: null as number | null,
+      type: "actual" as const,
+    }));
+
+    const forecastPoints = forecast.map((p) => ({
+      ...p,
+      actualCount: null as number | null,
+      forecastCount: p.count as number | null,
+      type: "forecast" as const,
+    }));
+
+    // To connect the actual line to the forecast line, the last actual point
+    // must also have a forecastCount equal to its actualCount.
+    if (actualPoints.length > 0 && forecastPoints.length > 0) {
+      const lastActual = actualPoints[actualPoints.length - 1];
+      lastActual.forecastCount = lastActual.actualCount;
+    }
+
+    const combined = [...actualPoints, ...forecastPoints];
+    return combined.sort((a, b) => a.time - b.time);
+  }, [history, forecast]);
 
   // Find where forecast starts for the reference line
   const forecastStartTime =
     forecast.length > 0 ? history[history.length - 1]?.time : null;
+
+  // X-Axis formatter to show date only when needed
+  const formatXAxis = (time: number) => {
+    const date = new Date(time);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+
+    if (isToday) {
+      return date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+    return date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
 
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart
           data={chartData}
-          margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+          margin={{ top: 20, right: 20, left: -16, bottom: 0 }}
         >
           <defs>
             <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
@@ -68,10 +112,13 @@ export function OccupancyChart({
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis
-            dataKey="timeLabel"
-            tick={{ fontSize: 11, fill: "#94a3b8" }}
+            dataKey="time"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            tickFormatter={formatXAxis}
+            tick={{ fontSize: 10, fill: "#94a3b8" }}
             tickLine={false}
-            interval="preserveStartEnd"
+            minTickGap={30}
           />
           <YAxis
             tick={{ fontSize: 11, fill: "#94a3b8" }}
@@ -79,26 +126,18 @@ export function OccupancyChart({
             allowDecimals={false}
           />
           <Tooltip
+            labelFormatter={(label: any) => formatXAxis(Number(label))}
             contentStyle={{
               fontSize: 12,
               borderRadius: 8,
               border: "1px solid #e2e8f0",
               boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
             }}
-            formatter={(value, _name, props) => {
-              const label =
-                (props as { payload?: { type?: string } }).payload?.type === "forecast"
-                  ? "Predicted Students"
-                  : "Students";
-              return [String(value ?? 0), label];
-            }}
+            itemSorter={(item) => (item.name === "Students" ? -1 : 1)}
           />
           {forecastStartTime && (
             <ReferenceLine
-              x={
-                chartData.find((d) => d.time === forecastStartTime)
-                  ?.timeLabel ?? ""
-              }
+              x={forecastStartTime}
               stroke="#f59e0b"
               strokeDasharray="4 4"
               label={{
@@ -110,13 +149,25 @@ export function OccupancyChart({
             />
           )}
           <Area
-            type="monotone"
-            dataKey="count"
+            type="linear"
+            dataKey="actualCount"
             stroke="#3b82f6"
             fill="url(#colorCount)"
-            strokeWidth={2}
+            strokeWidth={3}
             dot={false}
             activeDot={{ r: 4 }}
+            name="Students"
+          />
+          <Area
+            type="linear"
+            dataKey="forecastCount"
+            stroke="#f59e0b"
+            fill="url(#colorForecast)"
+            strokeWidth={3}
+            strokeDasharray="5 5"
+            dot={false}
+            activeDot={{ r: 4 }}
+            name="Predicted Students"
           />
         </AreaChart>
       </ResponsiveContainer>

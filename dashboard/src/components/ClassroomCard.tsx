@@ -109,7 +109,7 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
             </p>
           )}
         </div>
-        <p className="mb-2 text-sm text-slate-500">students detected</p>
+        <p className="mb-2 text-sm text-slate-500">students~</p>
         {room.maxOccupancy !== undefined && (
           <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
             <div

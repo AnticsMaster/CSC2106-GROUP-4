@@ -100,7 +100,7 @@ function ZoneBarChart({ data, zoneKey, label, pin }: ZoneBarChartProps) {
       </div>
 
       {/* Bar chart — no Y-axis, height conveys intensity (like Google Maps) */}
-      <div className="h-16">
+      <div className="h-32">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
             data={data}
@@ -140,7 +140,7 @@ interface HeatmapChartProps {
 }
 
 export function HeatmapChart({ roomId }: HeatmapChartProps) {
-  const [range, setRange] = useState<RangeLabel>("1 hr");
+  const [range, setRange] = useState<RangeLabel>("30 min");
   const selectedPoints = RANGES.find((r) => r.label === range)?.points ?? 60;
 
   // Load 240 points once — slicing for range is instant, no re-fetch needed
@@ -185,8 +185,7 @@ export function HeatmapChart({ roomId }: HeatmapChartProps) {
   return (
     <div>
       {/* Section header + range selector */}
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-600">Zone Activity History</h3>
+      <div className="mb-3 flex items-center justify-end">
         <div className="flex gap-1">
           {RANGES.map((r) => (
             <button
