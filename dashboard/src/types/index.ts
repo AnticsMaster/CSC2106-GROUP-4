@@ -34,6 +34,16 @@ export interface OccupancyHistoryEntry {
   picoTimestamp?: number;
 }
 
+/** A single heatmap history data point for charting. */
+export interface HeatmapDataPoint {
+  time: number;      // epoch ms
+  timeLabel: string; // formatted HH:MM
+  z1: number;        // zone 1 score 0–3
+  z2: number;
+  z3: number;
+  z4: number;
+}
+
 /** Chart-friendly representation of a history entry (epoch ms for x-axis). */
 export interface OccupancyDataPoint {
   time: number; // epoch ms

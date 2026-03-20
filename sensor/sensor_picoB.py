@@ -61,9 +61,10 @@ IDLE_SLEEP_MS        = 200
 # ↓ Change HEATMAP_INTERVAL_MS to adjust how often a report is sent (default 30s).
 # ↓ Change thresholds to tune how many hits map to each score level.
 HPIR_PINS           = [0, 6, 8, 26]  # GP pins for Zone 1–4
-HEATMAP_INTERVAL_MS = 30_000          # send one "H" frame per interval
-ZONE_THRESH_LOW     = 2               # 1–2 hits  → score 1 (low)
-ZONE_THRESH_MED     = 5               # 3–5 hits  → score 2 (medium); 6+ → score 3 (high)
+HEATMAP_INTERVAL_MS = 60_000          # send one "H" frame per minute
+ZONE_HOLD_MS        = 3_000           # quiet time before a presence event ends (debounce)
+ZONE_THRESH_LOW     = 3               # 1–3 events → score 1 (low)
+ZONE_THRESH_MED     = 7               # 4–7 events → score 2 (medium); 8+ → score 3 (high)
 
 # ── Ultrasonic config ─────────────────────────────────────────────────────────
 TRIG1_PIN             = 3
@@ -207,22 +208,16 @@ except Exception:
     pass
 
 # ── Heatmap zone tracking ─────────────────────────────────────────────────────
-# Each IRQ handler increments that zone's hit counter.
-# The main loop reads and resets counters every HEATMAP_INTERVAL_MS.
-_zone_hits      = [0, 0, 0, 0]
-_last_heatmap_ms = 0
-
-def _z0_irq(pin): _zone_hits[0] += 1
-def _z1_irq(pin): _zone_hits[1] += 1
-def _z2_irq(pin): _zone_hits[2] += 1
-def _z3_irq(pin): _zone_hits[3] += 1
-
-for _pin, _handler in ((hpir0, _z0_irq), (hpir1, _z1_irq),
-                        (hpir2, _z2_irq), (hpir3, _z3_irq)):
-    try:
-        _pin.irq(trigger=Pin.IRQ_RISING, handler=_handler)
-    except Exception:
-        pass
+# Presence-hold debounce (no IRQs):
+#   - Zone goes "hot"  on first high reading  → count +1 (one presence event)
+#   - Zone stays "hot" while PIR keeps firing → no extra count
+#   - Zone goes "cold" after ZONE_HOLD_MS of silence → ready for next person
+# The main loop polls the pins every tick and resets counters every 30 s.
+_zone_hits           = [0, 0, 0, 0]
+_zone_active         = [False, False, False, False]  # True while zone is "hot"
+_zone_last_ms        = [0, 0, 0, 0]                 # last time each zone saw motion
+_last_heatmap_ms     = 0
+_last_heatmap_scores = [0, 0, 0, 0]   # scores from the previous interval
 
 def _zone_score(hits):
     """Map raw hit count in window to display score 0–3."""
@@ -351,7 +346,9 @@ class SensorNode:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self):
-        global _pir_motion_flag, _last_pir_high_ms, _last_heatmap_ms
+        global _pir_motion_flag, _last_pir_high_ms
+        global _last_heatmap_ms, _last_heatmap_scores
+        global _zone_hits, _zone_active, _zone_last_ms
 
         session_active    = False
         reset_ultra_fsm(time.ticks_ms())
@@ -392,10 +389,26 @@ class SensorNode:
                     print("No motion → counting OFF")
                     reset_ultra_fsm(t)
             else:
-                try:
-                    machine.lightsleep(IDLE_SLEEP_MS)
-                except Exception:
-                    time.sleep_ms(IDLE_SLEEP_MS)
+                # Only sleep when NOT advertising — lightsleep suspends the CYW43
+                # radio, which would cut the 300ms BLE burst short and cause the
+                # head node to miss the frame entirely.
+                if not self._adv_active:
+                    try:
+                        machine.lightsleep(IDLE_SLEEP_MS)
+                    except Exception:
+                        time.sleep_ms(IDLE_SLEEP_MS)
+                else:
+                    time.sleep_ms(10)   # stay awake; burst will end shortly
+
+            # ── Heatmap zone polling (presence-hold debounce) ─────────────────
+            for _i, _hpin in enumerate((hpir0, hpir1, hpir2, hpir3)):
+                if _hpin.value() == 1:
+                    _zone_last_ms[_i] = t
+                    if not _zone_active[_i]:
+                        _zone_active[_i] = True
+                        _zone_hits[_i] += 1     # new presence event — count once
+                elif _zone_active[_i] and time.ticks_diff(t, _zone_last_ms[_i]) >= ZONE_HOLD_MS:
+                    _zone_active[_i] = False    # zone went cold — ready for next person
 
             # ── Inject own count frame on change ──────────────────────────────
             if count != prev_count:
@@ -407,8 +420,14 @@ class SensorNode:
                 scores = [_zone_score(_zone_hits[i]) for i in range(4)]
                 _zone_hits[0] = _zone_hits[1] = _zone_hits[2] = _zone_hits[3] = 0
                 _last_heatmap_ms = t
-                if not self._adv_active:
-                    self.inject_heatmap(scores)
+                # Skip if this interval AND the last were both all-zero (room empty).
+                # Always send once when transitioning from active → empty so the
+                # dashboard clears; skip every subsequent all-zero frame after that.
+                was_empty = not any(_last_heatmap_scores)
+                is_empty  = not any(scores)
+                if not (was_empty and is_empty):
+                    self.inject_heatmap(scores)   # always inject — same as inject_count
+                _last_heatmap_scores[:] = scores
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 print("Warming up PIR...")

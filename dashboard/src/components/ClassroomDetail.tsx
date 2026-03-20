@@ -4,6 +4,7 @@ import { generateForecast, predictOccupancy } from "../lib/prediction";
 import type { Classroom } from "../types";
 import { OccupancyChart } from "./OccupancyChart";
 import { HeatmapGrid } from "./HeatmapGrid";
+import { HeatmapChart } from "./HeatmapChart";
 import { PredictionBadge } from "./PredictionBadge";
 import { StatusBadge } from "./StatusBadge";
 
@@ -53,7 +54,7 @@ export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-            <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
                     <div>
@@ -90,8 +91,8 @@ export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
                     </div>
                 </div>
 
-                {/* Body */}
-                <div className="px-6 py-5">
+                {/* Body — scrollable so all sections fit */}
+                <div className="overflow-y-auto px-6 py-5">
                     {/* Current status row */}
                     <div className="mb-5 flex flex-wrap gap-6">
                         <div>
@@ -134,12 +135,17 @@ export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
                         </div>
                     )}
 
-                    {/* Heatmap */}
+                    {/* Current heatmap snapshot */}
                     <div className="mb-5">
                         <HeatmapGrid heatmap={room.heatmap} />
                     </div>
 
-                    {/* Chart */}
+                    {/* Heatmap history chart */}
+                    <div className="mb-5 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                        <HeatmapChart roomId={room.roomId} />
+                    </div>
+
+                    {/* Occupancy chart */}
                     <div className="mb-4">
                         <h3 className="mb-2 text-sm font-semibold text-slate-600">
                             Occupancy History
