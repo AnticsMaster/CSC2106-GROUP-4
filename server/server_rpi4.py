@@ -77,7 +77,7 @@ SUBSCRIBE_ACL = {
     "Pi4-BackUp-E2":   ["csc2106/HeadNode-E2/status"],
     "Pi4-HeadNode-E6": [],
     "Pi4-Backup-E6":   ["csc2106/HeadNode-E6/status"],
-    "bridge":          ["csc2106/+/classroom/+/occupancy", "csc2106/+/classroom/+/status"],
+    "bridge":          ["csc2106/+/classroom/+/occupancy", "csc2106/+/classroom/+/heatmap", "csc2106/+/classroom/+/status"],
 }
 
 
