@@ -44,7 +44,8 @@ NODE_ID = ubinascii.hexlify(machine.unique_id()).decode()[-6:]
 ROOM_ID   = "E2-02-01"
 # ROOM_CODE is a 3-char compact form used inside BLE frames to save space.
 # Derived automatically: "E2-02-01" → "201",  "E2-02-03" → "203"
-ROOM_CODE = ROOM_ID[1] + ROOM_ID[-2:]   # building digit + room digits
+ROOM_CODE = ROOM_ID[1] + ROOM_ID[4] + ROOM_ID[-2:]   # building + floor + room digits
+# "E2-02-01" → "2201",  "E6-02-03" → "6203"
 
 # ── PIR config ────────────────────────────────────────────────────────────────
 PIR_PIN              = 26
@@ -96,8 +97,8 @@ def adv_payload_name(name_str):
     return payload
 
 def frame_to_name(frame):
-    return frame[:25]   # BLE adv payload = 31 bytes; 5 bytes overhead → 26 max name.
-                        # Using 25 to stay conservative.
+    return frame[:26]   # BLE adv payload = 31 bytes; 5 bytes overhead → 26 max name.
+                        # 4-char room codes (e.g. "2201") require the full 26 chars.
 
 # ── Ultrasonic distance ───────────────────────────────────────────────────────
 def get_distance_cm(trig, echo):
@@ -238,7 +239,7 @@ class SensorNode:
     def inject_count(self, c):
         # msgid capped at 0xFFF (4095) so it never exceeds 4 digits.
         # With ROOM_CODE (3 chars) the worst-case frame is:
-        #   M1|abc123|4095|3|C|201:99  =  25 chars  ← fits safely
+        #   M1|abc123|4095|3|C|2201:99  =  26 chars  ← fits at BLE max
         self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFF
         data  = "{}:{}".format(ROOM_CODE, c)   # e.g. "201:5"
         frame = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "C", data)

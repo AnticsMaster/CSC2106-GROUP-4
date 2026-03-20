@@ -70,9 +70,9 @@ def encrypt_payload(plaintext_str):
 
 # ── BLE frame helpers ─────────────────────────────────────────────────────────
 def decode_room_id(code):
-    # Sensor Picos send a 3-char room code to fit within the 25-char BLE frame.
-    # "201" → "E2-02-01",  "603" → "E6-02-03"
-    return "E{}-02-{}".format(code[0], code[1:])
+    # Sensor Picos send a 4-char room code: building + floor + room.
+    # "2201" → "E2-02-01",  "6203" → "E6-02-03"
+    return "E{}-0{}-{}".format(code[0], code[1], code[2:])
 
 def parse_frame(s):
     try:
