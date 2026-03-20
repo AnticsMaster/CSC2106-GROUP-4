@@ -20,10 +20,11 @@ function formatTime(ts: Classroom["lastUpdated"]): string {
 
 interface ClassroomCardProps {
   room: Classroom;
+  isAdmin?: boolean;
   onClick?: () => void;
 }
 
-export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
+export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const [saving, setSaving] = useState(false);
@@ -153,7 +154,7 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
               {saving ? "…" : "Save"}
             </button>
           </div>
-        ) : (
+        ) : isAdmin ? (
           <button
             onClick={startEdit}
             className="flex items-center gap-1 rounded px-2 py-0.5 text-slate-700 hover:bg-slate-200"
@@ -166,6 +167,10 @@ export function ClassroomCard({ room, onClick }: ClassroomCardProps) {
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a2 2 0 01-1.414.586H9v-2a2 2 0 01.586-1.414z" />
             </svg>
           </button>
+        ) : (
+          <span className="font-semibold px-2 py-0.5 text-slate-700">
+            {room.maxOccupancy !== undefined ? room.maxOccupancy : "—"}
+          </span>
         )}
       </div>
 

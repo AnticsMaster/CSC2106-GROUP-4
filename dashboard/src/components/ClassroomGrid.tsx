@@ -4,9 +4,10 @@ import { ClassroomCard } from "./ClassroomCard";
 interface ClassroomGridProps {
   classrooms: Classroom[];
   onSelect?: (room: Classroom) => void;
+  isAdmin?: boolean;
 }
 
-export function ClassroomGrid({ classrooms, onSelect }: ClassroomGridProps) {
+export function ClassroomGrid({ classrooms, onSelect, isAdmin }: ClassroomGridProps) {
   if (classrooms.length === 0) {
     return (
       <div className="py-20 text-center text-slate-500">
@@ -25,6 +26,7 @@ export function ClassroomGrid({ classrooms, onSelect }: ClassroomGridProps) {
         <ClassroomCard
           key={room.roomId}
           room={room}
+          isAdmin={isAdmin}
           onClick={onSelect ? () => onSelect(room) : undefined}
         />
       ))}

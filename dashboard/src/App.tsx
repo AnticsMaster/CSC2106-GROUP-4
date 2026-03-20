@@ -2,12 +2,16 @@ import { useState } from "react";
 import { Navbar } from "./components/Navbar";
 import { ClassroomGrid } from "./components/ClassroomGrid";
 import { ClassroomDetail } from "./components/ClassroomDetail";
+import { Login } from "./components/Login";
 import { useClassrooms } from "./hooks/useClassrooms";
+import { useAuth } from "./hooks/useAuth";
 import type { Classroom } from "./types";
 
 function App() {
   const { classrooms, loading, error } = useClassrooms();
+  const { user } = useAuth();
   const [selectedRoom, setSelectedRoom] = useState<Classroom | null>(null);
+  const [showLogin, setShowLogin] = useState(false);
 
   // Keep selectedRoom in sync with live data
   const liveSelectedRoom = selectedRoom
@@ -16,11 +20,21 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <Navbar />
+      <Navbar 
+        user={user} 
+        onLoginClick={() => setShowLogin(true)} 
+      />
 
       <main className="mx-auto max-w-6xl px-4 py-8">
-        {/* Summary bar */}
-        <div className="mb-6 flex flex-wrap items-center gap-4 text-sm text-slate-600">
+        {showLogin && !user ? (
+          <Login 
+            onSuccess={() => setShowLogin(false)} 
+            onCancel={() => setShowLogin(false)} 
+          />
+        ) : (
+          <>
+            {/* Summary bar */}
+            <div className="mb-6 flex flex-wrap items-center gap-4 text-sm text-slate-600">
           <span>
             Total rooms:{" "}
             <strong className="text-slate-900">{classrooms.length}</strong>
@@ -73,8 +87,11 @@ function App() {
         {!loading && !error && (
           <ClassroomGrid
             classrooms={classrooms}
+            isAdmin={!!user}
             onSelect={setSelectedRoom}
           />
+        )}
+          </>
         )}
       </main>
 
