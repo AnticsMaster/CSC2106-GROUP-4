@@ -46,8 +46,6 @@ export function DeviceHealth({ classrooms }: DeviceHealthProps) {
               <th className="px-6 py-4">Room / Device</th>
               <th className="px-6 py-4">Status</th>
               <th className="px-6 py-4">Last Heartbeat</th>
-              <th className="px-6 py-4">Pico Epoch</th>
-              <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -83,18 +81,6 @@ export function DeviceHealth({ classrooms }: DeviceHealthProps) {
                   </td>
                   <td className={`px-6 py-4 font-mono text-xs ${isStale ? "text-amber-600 font-bold" : "text-slate-600"}`}>
                     {formatRelativeTime(heartbeatTs)}
-                  </td>
-                  <td className="px-6 py-4 font-mono text-xs text-slate-400">
-                    {room.picoTimestamp ?? "N/A"}
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <button 
-                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50"
-                      disabled={!(isOnline && !isStale)}
-                      onClick={() => alert(`Diagnostics for ${room.roomId} would trigger a remote ping.`)}
-                    >
-                      Ping Device
-                    </button>
                   </td>
                 </tr>
               );
