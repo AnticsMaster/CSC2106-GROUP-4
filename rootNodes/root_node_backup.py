@@ -105,22 +105,59 @@ def encrypt_payload(plaintext_str):
     cipher = ucryptolib.aes(AES_KEY, 2, iv)
     return iv + cipher.encrypt(data)
 
+# ── BLE Protocol Constants ───────────────────────────────────────────────────
+PROTOCOL_VERSION = 0xA1
+BLE_ENC_KEY = b"1234567890ABCDEF"  # Replace with secure key
+BLE_MAC_KEY = b"FEDCBA0987654321"  # Replace with secure key
+COMPANY_ID = b"\x12\x34"  # Placeholder company ID
+
+# ── Helper Functions ─────────────────────────────────────────────────────────
+def pack_classroom_id(is_west, block_num, level, room_num):
+    packed = (is_west << 12) | (block_num << 9) | (level << 5) | room_num
+    return packed.to_bytes(2, "big")
+
+def unpack_classroom_id(packed):
+    value = int.from_bytes(packed, "big")
+    is_west = (value >> 12) & 0x1
+    block_num = (value >> 9) & 0x7
+    level = (value >> 5) & 0xF
+    room_num = value & 0x1F
+    return is_west, block_num, level, room_num
+
+def build_nonce(unique_id, msgid, ttl_type):
+    return unique_id + msgid.to_bytes(2, "big") + bytes([ttl_type]) + bytes(5)
+
+def decrypt_data(ciphertext, unique_id, msgid, ttl_type):
+    nonce = build_nonce(unique_id, msgid, ttl_type)
+    aes = ucryptolib.aes(BLE_ENC_KEY, 1, nonce)  # AES ECB mode
+    keystream = aes.encrypt(bytes(16))
+    return bytes([c ^ k for c, k in zip(ciphertext, keystream[:4])])
+
+def compute_auth_tag(header, ciphertext):
+    h = uhashlib.sha256()
+    h.update(BLE_MAC_KEY + header + ciphertext)
+    return h.digest()[:4]
+
+def parse_frame(frame):
+    if len(frame) != 20 or frame[0] != PROTOCOL_VERSION:
+        return None
+    unique_id = frame[1:9]
+    msgid = int.from_bytes(frame[9:11], "big")
+    ttl_type = frame[11]
+    ttl = ttl_type >> 4
+    typ = ttl_type & 0xF
+    ciphertext = frame[12:16]
+    tag = frame[16:20]
+    header = frame[:12]
+    computed_tag = compute_auth_tag(header, ciphertext)
+    if tag != computed_tag:
+        return None
+    return unique_id, msgid, ttl, typ, ciphertext
+
 # ── BLE frame helpers ─────────────────────────────────────────────────────────
 def decode_room_id(code):
     # "2201" → "E2-02-01",  "3301" → "E3-03-01"
     return "E{}-0{}-{}".format(code[0], code[1], code[2:])
-
-def parse_frame(s):
-    try:
-        if not s.startswith("M1|"):
-            return None
-        parts = s.split("|", 5)
-        if len(parts) != 6:
-            return None
-        _, orig, msgid, ttl_s, typ, data = parts
-        return orig, msgid, int(ttl_s), typ, data
-    except Exception:
-        return None
 
 # ── Backup Head Node ──────────────────────────────────────────────────────────
 class BackupHeadNode:
@@ -172,7 +209,7 @@ class BackupHeadNode:
             if not parsed:
                 return
 
-            orig, msgid, ttl, typ, payload = parsed
+            unique_id, msgid, ttl, typ, ciphertext = parsed
             if typ not in ("C", "H"):
                 return
 

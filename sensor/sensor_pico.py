@@ -93,30 +93,61 @@ hpir1 = Pin(HPIR_PINS[1], Pin.IN)
 hpir2 = Pin(HPIR_PINS[2], Pin.IN)
 hpir3 = Pin(HPIR_PINS[3], Pin.IN)
 
-# ── BLE frame helpers ─────────────────────────────────────────────────────────
-def make_frame(orig, msgid, ttl, typ, data):
-    return "M1|{}|{}|{}|{}|{}".format(orig, msgid, ttl, typ, data)
+# ── BLE Protocol Constants ───────────────────────────────────────────────────
+PROTOCOL_VERSION = 0xA1
+BLE_ENC_KEY = b"1234567890ABCDEF"  # Replace with secure key
+BLE_MAC_KEY = b"FEDCBA0987654321"  # Replace with secure key
+COMPANY_ID = b"\x12\x34"  # Placeholder company ID
 
-def parse_frame(s):
-    try:
-        if not s.startswith("M1|"):
-            return None
-        parts = s.split("|", 5)
-        if len(parts) != 6:
-            return None
-        _, orig, msgid, ttl_s, typ, data = parts
-        return orig, msgid, int(ttl_s), typ, data
-    except Exception:
+# ── Helper Functions ─────────────────────────────────────────────────────────
+def pack_classroom_id(is_west, block_num, level, room_num):
+    packed = (is_west << 12) | (block_num << 9) | (level << 5) | room_num
+    return packed.to_bytes(2, "big")
+
+def unpack_classroom_id(packed):
+    value = int.from_bytes(packed, "big")
+    is_west = (value >> 12) & 0x1
+    block_num = (value >> 9) & 0x7
+    level = (value >> 5) & 0xF
+    room_num = value & 0x1F
+    return is_west, block_num, level, room_num
+
+def build_nonce(unique_id, msgid, ttl_type):
+    return unique_id + msgid.to_bytes(2, "big") + bytes([ttl_type]) + bytes(5)
+
+def encrypt_data(plaintext, unique_id, msgid, ttl_type):
+    nonce = build_nonce(unique_id, msgid, ttl_type)
+    aes = ucryptolib.aes(BLE_ENC_KEY, 1, nonce)  # AES ECB mode
+    keystream = aes.encrypt(bytes(16))
+    return bytes([p ^ k for p, k in zip(plaintext, keystream[:4])])
+
+def compute_auth_tag(header, ciphertext):
+    h = uhashlib.sha256()
+    h.update(BLE_MAC_KEY + header + ciphertext)
+    return h.digest()[:4]
+
+def build_frame(unique_id, msgid, ttl, typ, plaintext):
+    ttl_type = (ttl << 4) | typ
+    ciphertext = encrypt_data(plaintext, unique_id, msgid, ttl_type)
+    header = bytes([PROTOCOL_VERSION]) + unique_id + msgid.to_bytes(2, "big") + bytes([ttl_type])
+    tag = compute_auth_tag(header, ciphertext)
+    return header + ciphertext + tag
+
+def parse_frame(frame):
+    if len(frame) != 20 or frame[0] != PROTOCOL_VERSION:
         return None
-
-def adv_payload_name(name_str):
-    name    = name_str.encode()
-    payload = bytearray(b"\x02\x01\x06")
-    payload += bytearray((len(name) + 1, 0x09)) + name
-    return payload
-
-def frame_to_name(frame):
-    return frame[:26]
+    unique_id = frame[1:9]
+    msgid = int.from_bytes(frame[9:11], "big")
+    ttl_type = frame[11]
+    ttl = ttl_type >> 4
+    typ = ttl_type & 0xF
+    ciphertext = frame[12:16]
+    tag = frame[16:20]
+    header = frame[:12]
+    computed_tag = compute_auth_tag(header, ciphertext)
+    if tag != computed_tag:
+        return None
+    return unique_id, msgid, ttl, typ, ciphertext
 
 # ── Ultrasonic distance ───────────────────────────────────────────────────────
 def get_distance_cm(trig, echo):
@@ -260,7 +291,7 @@ class SensorNode:
     def inject_count(self, c):
         self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFF
         data  = "{}:{}".format(ROOM_CODE, c)
-        frame = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "C", data)
+        frame = build_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "C", data)
         self.seen_check_add("{}:{}".format(NODE_ID, self._msgid_ctr))
         self.advertise_burst_start(frame)
         print("TX  {} ({}) count={}".format(ROOM_ID, ROOM_CODE, c))
@@ -269,7 +300,7 @@ class SensorNode:
         self._msgid_ctr = (self._msgid_ctr + 1) & 0xFFF
         packed = (scores[0] << 6) | (scores[1] << 4) | (scores[2] << 2) | scores[3]
         data   = "{}:{:02X}".format(ROOM_CODE, packed)
-        frame  = make_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "H", data)
+        frame  = build_frame(NODE_ID, str(self._msgid_ctr), DEFAULT_TTL, "H", data)
         self.seen_check_add("{}:{}".format(NODE_ID, self._msgid_ctr))
         self.advertise_burst_start(frame)
         print("TX  HMAP {} zones={}".format(ROOM_CODE, scores))
@@ -278,7 +309,7 @@ class SensorNode:
         ttl2 = ttl - 1
         if ttl2 < 0:
             return
-        fwd = make_frame(orig, msgid, ttl2, typ, data)
+        fwd = build_frame(orig, msgid, ttl2, typ, data)
         self.advertise_burst_start(fwd)
         print("FWD ttl={} orig={}".format(ttl2, orig))
 
