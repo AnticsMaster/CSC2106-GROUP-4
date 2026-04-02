@@ -17,6 +17,7 @@ export interface Classroom {
   occupied: boolean;
   count: number;
   lastUpdated: Timestamp | null;
+  lastSeen?: Timestamp | null;
   deviceStatus: "online" | "offline" | "unknown";
   picoTimestamp?: number;
   maxOccupancy?: number;

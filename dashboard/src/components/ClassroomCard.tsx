@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { doc, updateDoc } from "firebase/firestore";
+import { useState, useEffect } from "react";
+import { doc, updateDoc, deleteDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { Classroom } from "../types";
 import { StatusBadge } from "./StatusBadge";
@@ -29,10 +29,22 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const [saving, setSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 5000); // Check every 5s
+    return () => clearInterval(timer);
+  }, []);
 
   const maxOcc = room.maxOccupancy ?? Infinity;
+  const heartbeatTs = room.lastSeen || room.lastUpdated;
+  const heartbeatDate = heartbeatTs?.toDate();
+  const isStale = heartbeatDate && (now - heartbeatDate.getTime() > 120000); // 2 mins
+  const isOffline = room.deviceStatus === "offline" || isStale;
+
   const status =
-    room.deviceStatus === "offline"
+    isOffline
       ? "offline"
       : room.count === 0
         ? "available"
@@ -80,6 +92,22 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
     setEditing(false);
   }
 
+  async function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this room? This action cannot be undone.")) {
+      return;
+    }
+    
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, "classrooms", room.roomId));
+    } catch (err) {
+      console.error("Failed to delete room:", err);
+      alert("Failed to delete the room. Check console for details.");
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <div
       className={`rounded-xl border-2 ${borderColor} bg-white p-5 shadow-sm transition-shadow hover:shadow-md ${onClick ? "cursor-pointer" : ""}`}
@@ -93,10 +121,24 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
         <h3 className="text-lg font-semibold text-slate-800">
           {room.roomName}
         </h3>
-        <StatusBadge
-          status={status === "offline" ? "available" : status}
-          deviceStatus={room.deviceStatus}
-        />
+        <div className="flex items-center gap-2">
+          <StatusBadge
+            status={status === "offline" ? "available" : status}
+            deviceStatus={isOffline ? "offline" : room.deviceStatus}
+          />
+          {isAdmin && (
+            <button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50 transition-colors"
+              title="Delete Room"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Student count */}
@@ -114,11 +156,13 @@ export function ClassroomCard({ room, isAdmin, onClick }: ClassroomCardProps) {
           <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               className={`h-full rounded-full transition-all ${
-                status === "full"
-                  ? "bg-red-500"
-                  : status === "occupied"
-                    ? "bg-orange-400"
-                    : "bg-green-400"
+                status === "offline"
+                  ? "bg-gray-400"
+                  : status === "full"
+                    ? "bg-red-500"
+                    : status === "occupied"
+                      ? "bg-orange-400"
+                      : "bg-green-400"
               }`}
               style={{ width: `${Math.min((room.count / room.maxOccupancy) * 100, 100)}%` }}
             />

@@ -52,7 +52,8 @@ FIREBASE_CREDS = os.getenv(
 
 OCCUPANCY_TOPIC = "csc2106/+/classroom/+/occupancy"
 HEATMAP_TOPIC   = "csc2106/+/classroom/+/heatmap"
-STATUS_TOPIC    = "csc2106/+/classroom/+/status"
+STATUS_TOPIC    = "csc2106/+/status"
+CLASSROOM_STATUS_TOPIC = "csc2106/+/classroom/+/status"
 
 # ── Firebase ───────────────────────────────────────────────────────────────────
 if not os.path.isfile(FIREBASE_CREDS):
@@ -98,7 +99,8 @@ def on_connect(client, _userdata, _flags, rc):
     client.subscribe(OCCUPANCY_TOPIC, qos=1)
     client.subscribe(HEATMAP_TOPIC, qos=1)
     client.subscribe(STATUS_TOPIC, qos=1)
-    log.info("Subscribed: %s, %s, %s", OCCUPANCY_TOPIC, HEATMAP_TOPIC, STATUS_TOPIC)
+    client.subscribe(CLASSROOM_STATUS_TOPIC, qos=1)
+    log.info("Subscribed: %s, %s, %s, %s", OCCUPANCY_TOPIC, HEATMAP_TOPIC, STATUS_TOPIC, CLASSROOM_STATUS_TOPIC)
 
 
 def on_disconnect(_client, _userdata, rc):
@@ -109,25 +111,35 @@ def on_disconnect(_client, _userdata, rc):
 def on_message(_client, _userdata, msg):
     topic = msg.topic
     parts = topic.split("/")
+
+    # Handle node-level status (e.g., csc2106/HeadNode-E2/status)
+    if len(parts) == 3 and parts[2] == "status":
+        node_id = parts[1]
+        raw = msg.payload.decode("utf-8", errors="replace")
+        log.info("MSG  %s  ->  %s", topic, raw)
+        _handle_node_status(node_id, raw)
+        return
+
     if len(parts) < 5:
         return
 
+    node_id = parts[1]
     room_id = parts[3]
     msg_type = parts[4]
 
     if msg_type == "occupancy":
         log.info("MSG  %s  ->  <encrypted %d bytes>", topic, len(msg.payload))
-        _handle_occupancy(room_id, msg.payload)
+        _handle_occupancy(node_id, room_id, msg.payload)
     elif msg_type == "heatmap":
         log.info("MSG  %s  ->  <encrypted %d bytes>", topic, len(msg.payload))
-        _handle_heatmap(room_id, msg.payload)
+        _handle_heatmap(node_id, room_id, msg.payload)
     elif msg_type == "status":
         raw = msg.payload.decode("utf-8", errors="replace")
         log.info("MSG  %s  ->  %s", topic, raw)
         _handle_status(room_id, raw)
 
 
-def _handle_occupancy(room_id: str, raw_bytes: bytes) -> None:
+def _handle_occupancy(node_id: str, room_id: str, raw_bytes: bytes) -> None:
     try:
         decrypted = decrypt_payload(raw_bytes)
         data = json.loads(decrypted)
@@ -151,11 +163,14 @@ def _handle_occupancy(room_id: str, raw_bytes: bytes) -> None:
     upsert_classroom(
         room_id,
         {
+            "nodeId": node_id,
             "roomId": room_id,
             "roomName": room_name,
             "occupied": occupied,
             "count": count,
             "lastUpdated": now,
+            "lastSeen": now,
+            "deviceStatus": "online",
             "picoTimestamp": pico_ts,
         },
         snap=snap,
@@ -175,7 +190,7 @@ def _handle_occupancy(room_id: str, raw_bytes: bytes) -> None:
     log.info("[%s] Firestore updated  occupied=%s  count=%d  max=%d", room_id, occupied, count, max_occ)
 
 
-def _handle_heatmap(room_id: str, raw_bytes: bytes) -> None:
+def _handle_heatmap(node_id: str, room_id: str, raw_bytes: bytes) -> None:
     try:
         decrypted = decrypt_payload(raw_bytes)
         data = json.loads(decrypted)
@@ -200,7 +215,12 @@ def _handle_heatmap(room_id: str, raw_bytes: bytes) -> None:
     }
 
     # Merge into classrooms/<room_id> so the dashboard can read it alongside occupancy
-    upsert_classroom(room_id, {"heatmap": heatmap_doc})
+    upsert_classroom(room_id, {
+        "heatmap": heatmap_doc,
+        "nodeId": node_id,
+        "lastSeen": now,
+        "deviceStatus": "online",
+    })
 
     # Also append to heatmap_history for time-series analytics
     db.collection("heatmap_history").add({
@@ -213,6 +233,23 @@ def _handle_heatmap(room_id: str, raw_bytes: bytes) -> None:
 
     log.info("[%s] Heatmap Firestore updated  zones=%s", room_id, zones)
 
+
+def _handle_node_status(node_id: str, raw: str) -> None:
+    status = raw.strip().lower()
+    
+    # Query all classrooms managed by this node
+    docs = db.collection("classrooms").where(filter=firestore.FieldFilter("nodeId", "==", node_id)).stream()
+    now = firestore.SERVER_TIMESTAMP
+    
+    update_count = 0
+    for doc in docs:
+        doc.reference.update({
+            "deviceStatus": status,
+            "lastSeen": now,
+        })
+        update_count += 1
+        
+    log.info("[%s] node -> %s (updated %d classrooms)", node_id, status, update_count)
 
 def _handle_status(room_id: str, raw: str) -> None:
     status = raw.strip().lower()

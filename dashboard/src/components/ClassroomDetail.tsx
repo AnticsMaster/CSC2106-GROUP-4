@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useOccupancyHistory } from "../hooks/useOccupancyHistory";
 import { generateForecast, predictOccupancy } from "../lib/prediction";
 import type { Classroom } from "../types";
@@ -30,6 +30,25 @@ function formatTime(ts: Classroom["lastUpdated"]): string {
 export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
     const [activeTab, setActiveTab] = useState<"overview" | "history">("overview");
     const { data: rawHistory, loading, error } = useOccupancyHistory(room.roomId);
+    const [now, setNow] = useState(() => Date.now());
+
+    useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 5000);
+        return () => clearInterval(timer);
+    }, []);
+
+    const heartbeatTs = room.lastSeen || room.lastUpdated;
+    const heartbeatDate = heartbeatTs?.toDate();
+    const isStale = heartbeatDate && (now - heartbeatDate.getTime() > 120000);
+    const isOffline = room.deviceStatus === "offline" || isStale;
+
+    const status = isOffline 
+        ? "offline" 
+        : room.count === 0 
+            ? "available" 
+            : room.count >= (room.maxOccupancy ?? Infinity) 
+                ? "full" 
+                : "occupied";
 
     const history = useMemo(() => {
         return [...rawHistory].sort((a, b) => a.time - b.time);
@@ -71,14 +90,8 @@ export function ClassroomDetail({ room, onClose }: ClassroomDetailProps) {
                     </div>
                     <div className="flex items-center gap-3">
                         <StatusBadge
-                            status={
-                                room.count === 0
-                                    ? "available"
-                                    : room.count >= (room.maxOccupancy ?? Infinity)
-                                      ? "full"
-                                      : "occupied"
-                            }
-                            deviceStatus={room.deviceStatus}
+                            status={status === "offline" ? "available" : status}
+                            deviceStatus={isOffline ? "offline" : room.deviceStatus}
                         />
                         <button
                             onClick={onClose}

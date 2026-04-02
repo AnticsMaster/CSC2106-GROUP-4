@@ -37,6 +37,7 @@ export function useClassrooms() {
             occupied: d.occupied ?? false,
             count: d.count ?? 0,
             lastUpdated: d.lastUpdated ?? null,
+            lastSeen: d.lastSeen ?? null,
             deviceStatus: d.deviceStatus ?? "unknown",
             picoTimestamp: d.picoTimestamp,
             maxOccupancy: d.maxOccupancy ?? 30,
