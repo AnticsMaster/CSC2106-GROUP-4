@@ -4,5 +4,8 @@
   "broker_ip": "10.114.66.30",
   "node_id": "HeadNode-E6",
   "mqtt_pass": "e6-secret",
-  "building_prefix": "6"
+  "building_prefix": "6",
+  "ENC": "6767676767ABCDEF",
+  "MAC": "ABCDEF6767676767",
+  "COMPANY_ID": "0607"
 }

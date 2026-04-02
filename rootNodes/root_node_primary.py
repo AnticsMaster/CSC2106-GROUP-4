@@ -39,9 +39,9 @@ CLIENT_ID    = MQTT_USER
 STATUS_TOPIC = "csc2106/{}/status".format(NODE_ID)
 
 PROTOCOL_VERSION = 0xA1
-BLE_ENC_KEY = b"1234567890ABCDEF"
-BLE_MAC_KEY = b"FEDCBA0987654321"
-COMPANY_ID = b"\x12\x34"
+BLE_ENC_KEY = cfg["ENC"].encode()
+BLE_MAC_KEY = cfg["MAC"].encode() 
+COMPANY_ID = bytes.fromhex(cfg["company_id"])
 TYPE_COUNT   = 0x1
 TYPE_HEATMAP = 0x2
 

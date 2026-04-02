@@ -87,9 +87,10 @@ hpir3 = Pin(HPIR_PINS[3], Pin.IN)
 
 # ── BLE Protocol Constants ───────────────────────────────────────────────────
 PROTOCOL_VERSION = 0xA1
-BLE_ENC_KEY = b"1234567890ABCDEF"  # Replace with secure key
-BLE_MAC_KEY = b"FEDCBA0987654321"  # Replace with secure key
-COMPANY_ID = b"\x12\x34"
+
+BLE_ENC_KEY = cfg["ENC"].encode()
+BLE_MAC_KEY = cfg["MAC"].encode() 
+COMPANY_ID = bytes.fromhex(cfg["company_id"])
 TYPE_COUNT   = 0x1
 TYPE_HEATMAP = 0x2
 
@@ -465,7 +466,10 @@ class SensorNode:
                 self.inject_count(count)
 
             if time.ticks_diff(t, _last_heatmap_ms) >= HEATMAP_INTERVAL_MS:
-                scores = [_zone_score(_zone_hits[i]) for i in range(4)]
+                if count > 0:
+                    scores = [_zone_score(_zone_hits[i]) for i in range(4)]
+                else:
+                    scores = [0, 0, 0, 0]
                 _zone_hits[0] = _zone_hits[1] = _zone_hits[2] = _zone_hits[3] = 0
                 _last_heatmap_ms = t
                 was_empty = not any(_last_heatmap_scores)

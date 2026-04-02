@@ -5,5 +5,8 @@
   "node_id": "BackUp-E2",
   "primary_id": "HeadNode-E2",
   "mqtt_pass": "e2-secret",
-  "building_prefix": "2"
+  "building_prefix": "2",
+  "ENC": "6767676767ABCDEF",
+  "MAC": "ABCDEF6767676767",
+  "COMPANY_ID": "0607"
 }

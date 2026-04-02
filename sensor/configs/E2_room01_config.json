@@ -1,3 +1,6 @@
 {
-  "room_id": "E2-02-01"
+  "room_id": "E2-02-01",
+  "ENC": "6767676767ABCDEF",
+  "MAC": "ABCDEF6767676767",
+  "COMPANY_ID": "0607"
 }
