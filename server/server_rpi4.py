@@ -17,6 +17,7 @@
 # Install dependency:  pip install RPi.GPIO
 # Run with:           python3 server_rpi4.py
 
+import re
 import select
 import socket
 import time
@@ -52,41 +53,78 @@ T_PINGRESP = 13
 T_DISCONNECT = 14
 
 # ── Security ───────────────────────────────────────────────────────────────────
-# client_id (bytes) → required password (bytes)
-# Any client not in this dict, or with wrong password, gets CONNACK rc=5
-ALLOWED_CLIENTS = {
-    b"Pi4-HeadNode-E2": b"e2-secret",
-    b"Pi4-BackUp-E2":   b"e2-secret",
-    b"Pi4-HeadNode-E6": b"e6-secret",
-    b"Pi4-Backup-E6":   b"e6-secret",
-    b"bridge":          b"bridge-secret",
-}
+# Pattern-based auth — no hardcoded building list.
+# Adding a new building (e.g. E3) requires NO changes here.
+#
+# Naming conventions that the patterns enforce:
+#   Primary client ID:  Pi4-HeadNode-E<N>   password: e<N>-secret
+#   Backup  client ID:  Pi4-BackUp-E<N>     password: e<N>-secret
+#   Bridge  client ID:  bridge              password: bridge-secret
 
-# Publish ACL: client_id (str) → list of topic patterns they may publish to
-PUBLISH_ACL = {
-    "Pi4-HeadNode-E2": ["csc2106/HeadNode-E2/#"],
-    "Pi4-BackUp-E2":   ["csc2106/BackUp-E2/#",  "csc2106/HeadNode-E2/#"],  # failover
-    "Pi4-HeadNode-E6": ["csc2106/HeadNode-E6/#"],
-    "Pi4-Backup-E6":   ["csc2106/Backup-E6/#",  "csc2106/HeadNode-E6/#"],  # failover
-    "bridge":          [],  # bridge only subscribes
-}
+_RE_HEAD   = re.compile(r"^Pi4-HeadNode-E(\d+)$")
+_RE_BACKUP = re.compile(r"^Pi4-(?:BackUp|Backup)-E(\d+)$")
 
-# Subscribe ACL: client_id (str) → list of exact topic filters they may subscribe to
-SUBSCRIBE_ACL = {
-    "Pi4-HeadNode-E2": [],
-    "Pi4-BackUp-E2":   ["csc2106/HeadNode-E2/status"],
-    "Pi4-HeadNode-E6": [],
-    "Pi4-Backup-E6":   ["csc2106/HeadNode-E6/status"],
-    "bridge":          ["csc2106/+/classroom/+/occupancy", "csc2106/+/classroom/+/heatmap", "csc2106/+/classroom/+/status"],
-}
+BRIDGE_PASS = b"bridge-secret"
+
+
+def _auth_ok(client_id_bytes, password_bytes):
+    cid = client_id_bytes.decode("utf-8", "ignore")
+    pwd = password_bytes or b""
+
+    if cid == "bridge":
+        return pwd == BRIDGE_PASS
+
+    m = _RE_HEAD.match(cid) or _RE_BACKUP.match(cid)
+    if m:
+        expected = "e{}-secret".format(m.group(1)).encode()
+        return pwd == expected
+
+    return False
 
 
 def pub_acl_ok(client_id, topic):
-    return any(topic_match(pat, topic) for pat in PUBLISH_ACL.get(client_id, []))
+    """Pattern-based publish ACL — no hardcoded building list."""
+    if client_id == "bridge":
+        return False
+
+    # Strip "Pi4-" prefix to get the node_id ("HeadNode-E2", "BackUp-E3", …)
+    node_id = client_id[4:] if client_id.startswith("Pi4-") else client_id
+
+    m = _RE_HEAD.match("Pi4-" + node_id)
+    if m:
+        # Primary may publish only under its own namespace
+        return topic.startswith("csc2106/{}/".format(node_id))
+
+    m = _RE_BACKUP.match("Pi4-" + node_id)
+    if m:
+        building = m.group(1)
+        # Backup may publish under its own namespace and its primary's (failover)
+        own     = "csc2106/{}/".format(node_id)
+        primary = "csc2106/HeadNode-E{}/".format(building)
+        return topic.startswith(own) or topic.startswith(primary)
+
+    return False
 
 
 def sub_acl_ok(client_id, topic_filter):
-    return topic_filter in SUBSCRIBE_ACL.get(client_id, [])
+    """Pattern-based subscribe ACL — no hardcoded building list."""
+    if client_id == "bridge":
+        return topic_filter in (
+            "csc2106/+/classroom/+/occupancy",
+            "csc2106/+/classroom/+/heatmap",
+            "csc2106/+/classroom/+/status",
+        )
+
+    node_id = client_id[4:] if client_id.startswith("Pi4-") else client_id
+
+    m = _RE_BACKUP.match("Pi4-" + node_id)
+    if m:
+        building = m.group(1)
+        # Backup subscribes to its primary's status topic only
+        return topic_filter == "csc2106/HeadNode-E{}/status".format(building)
+
+    # Primaries and anything else: no subscriptions
+    return False
 
 # ── Broker state ───────────────────────────────────────────────────────────────
 buffers = {}  # sock → bytearray
@@ -96,8 +134,10 @@ retained = {}  # topic → bytes
 fd_map = {}  # fd (int) → socket object  (needed because select.poll returns fds)
 
 # ── Coordinator state ──────────────────────────────────────────────────────────
-cluster_A = {"root": "devA", "online": False}
-cluster_B = {"root": "devB", "online": False}
+# Dynamic dict keyed by building number string, e.g. "2", "6", "3"
+# Populated automatically when a HeadNode connects and publishes its status.
+# Adding a new building requires NO changes here.
+clusters = {}   # "2" → {"root": "HeadNode-E2", "online": False}
 
 
 # ── GPIO helpers ───────────────────────────────────────────────────────────────
@@ -235,9 +275,8 @@ def handle_connect(sock, pkt, pos):
     if flags & 0x40:
         password, pos = rd_str(pkt, pos)
 
-    # ── Auth: allowlist + password check ──────────────────────────────────────
-    expected = ALLOWED_CLIENTS.get(cid_b)
-    if expected is None or password != expected:
+    # ── Auth: pattern-based check ─────────────────────────────────────────────
+    if not _auth_ok(cid_b, password):
         print(f"[BROKER] AUTH FAILED  {cid}  — rejected")
         sock.sendall(bytes([T_CONNACK << 4, 2, 0, 5]))  # rc=5 = not authorized
         raise PermissionError("auth failed")
@@ -408,6 +447,13 @@ def try_parse(sock, buf):
 
 
 # ── Coordination logic (runs on every published message) ──────────────────────
+# Fully pattern-driven — handles any number of buildings automatically.
+_RE_HEAD_STATUS   = re.compile(r"^csc2106/(HeadNode-E(\d+))/status$")
+_RE_BACKUP_STATUS = re.compile(r"^csc2106/(?:BackUp|Backup)-(E\d+)/status$")
+_RE_ELECTED       = re.compile(r"^csc2106/cluster(\w+)/elected$")
+_RE_CROSS         = re.compile(r"^csc2106/cluster(\w+)/to/cluster(\w+)/(.+)$")
+
+
 def coordinate(topic, payload):
     msg = (
         payload.decode("utf-8", "ignore")
@@ -415,69 +461,48 @@ def coordinate(topic, payload):
         else str(payload)
     )
 
-    # ── Root A health (HeadNode-E2) ────────────────────────────────────────────
-    if topic == "csc2106/HeadNode-E2/status":
-        if msg == "online":
-            cluster_A["online"] = True
-            led_set(PIN_LED_A, True)
-            print("[COORD] Cluster A (HeadNode-E2) ONLINE")
-        elif msg == "offline":
-            cluster_A["online"] = False
-            led_set(PIN_LED_A, False)
-            print("[COORD] Cluster A (HeadNode-E2) OFFLINE — backup will take over")
+    # ── HeadNode-E* status (any building) ─────────────────────────────────────
+    m = _RE_HEAD_STATUS.match(topic)
+    if m:
+        node_id, building = m.group(1), m.group(2)
+        if building not in clusters:
+            clusters[building] = {"root": node_id, "online": False}
+        online = (msg == "online")
+        clusters[building].update(root=node_id, online=online)
+        state = "ONLINE" if online else "OFFLINE — backup will take over"
+        print(f"[COORD] Building E{building} ({node_id}) {state}")
+        return
 
-    # ── Root B health (HeadNode-E6) ────────────────────────────────────────────
-    elif topic == "csc2106/HeadNode-E6/status":
-        if msg == "online":
-            cluster_B["online"] = True
-            led_set(PIN_LED_B, True)
-            print("[COORD] Cluster B (HeadNode-E6) ONLINE")
-        elif msg == "offline":
-            cluster_B["online"] = False
-            led_set(PIN_LED_B, False)
-            print("[COORD] Cluster B (HeadNode-E6) OFFLINE — backup will take over")
+    # ── Backup status (any building) ──────────────────────────────────────────
+    m = _RE_BACKUP_STATUS.match(topic)
+    if m:
+        building_label = m.group(1)
+        print(f"[COORD] Building {building_label} Backup {msg.upper()}")
+        return
 
-    # ── Election results ───────────────────────────────────────────────────────
-    elif topic == "csc2106/clusterA/elected":
-        cluster_A.update(root=msg, online=True)
-        led_set(PIN_LED_A, True)
-        retained["csc2106/clusterA/root"] = payload
-        print(f"[COORD] Cluster A new root elected: {msg}")
-        forward("csc2106/clusterA/root", payload, retain=True)
+    # ── Election results: csc2106/cluster<label>/elected ──────────────────────
+    m = _RE_ELECTED.match(topic)
+    if m:
+        label = m.group(1)
+        root_topic = f"csc2106/cluster{label}/root"
+        retained[root_topic] = payload
+        print(f"[COORD] Cluster {label} new root elected: {msg}")
+        forward(root_topic, payload, retain=True)
+        return
 
-    elif topic == "csc2106/clusterB/elected":
-        cluster_B.update(root=msg, online=True)
-        led_set(PIN_LED_B, True)
-        retained["csc2106/clusterB/root"] = payload
-        print(f"[COORD] Cluster B new root elected: {msg}")
-        forward("csc2106/clusterB/root", payload, retain=True)
-
-    # ── Cross-cluster routing  A → B ──────────────────────────────────────────
-    elif topic.startswith("csc2106/clusterA/to/clusterB/"):
-        sub = topic[len("csc2106/clusterA/to/clusterB/") :]
-        relay = f"csc2106/{cluster_B['root']}/relay/{sub}"
-        print(f"[COORD] Route A→B  →  {relay}")
-        forward(relay, payload, qos=1)
-
-    # ── Cross-cluster routing  B → A ──────────────────────────────────────────
-    elif topic.startswith("csc2106/clusterB/to/clusterA/"):
-        sub = topic[len("csc2106/clusterB/to/clusterA/") :]
-        relay = f"csc2106/{cluster_A['root']}/relay/{sub}"
-        print(f"[COORD] Route B→A  →  {relay}")
-        forward(relay, payload, qos=1)
-
-    # ── Backup node status monitoring ──────────────────────────────────────────
-    elif topic == "csc2106/BackUp-E2/status":
-        if msg == "online":
-            print("[COORD] Building E2 BackUp-E2 ONLINE (standby)")
-        elif msg == "offline":
-            print("[COORD] Building E2 BackUp-E2 OFFLINE")
-
-    elif topic == "csc2106/Backup-E6/status":
-        if msg == "online":
-            print("[COORD] Building EG Backup-E6 ONLINE (standby)")
-        elif msg == "offline":
-            print("[COORD] Building EG Backup-E6 OFFLINE")
+    # ── Cross-cluster routing: csc2106/cluster<src>/to/cluster<dst>/<sub> ─────
+    m = _RE_CROSS.match(topic)
+    if m:
+        src_label, dst_label, sub = m.group(1), m.group(2), m.group(3)
+        dst_root_key = f"csc2106/cluster{dst_label}/root"
+        dst_root = (retained.get(dst_root_key) or b"").decode()
+        if dst_root:
+            relay = f"csc2106/{dst_root}/relay/{sub}"
+            print(f"[COORD] Route cluster{src_label}→cluster{dst_label}  →  {relay}")
+            forward(relay, payload, qos=1)
+        else:
+            print(f"[COORD] Route cluster{src_label}→cluster{dst_label} — no known root, dropped")
+        return
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
