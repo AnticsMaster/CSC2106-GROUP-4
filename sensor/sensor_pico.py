@@ -126,16 +126,18 @@ def pack_count_plaintext(classroom_packed, count_value):
 def pack_heatmap_plaintext(classroom_packed, heatmap_byte):
     return classroom_packed + bytes([heatmap_byte & 0xFF, 0])
 
-def build_nonce(unique_id, msgid, ttl_type):
-    return unique_id + int(msgid).to_bytes(2, "big") + bytes([ttl_type & 0xFF]) + bytes(5)
+def build_nonce(unique_id, msgid, typ):
+    # Use only typ (not ttl) in the nonce so decryption works after TTL is
+    # decremented during multi-hop relay.
+    return unique_id + int(msgid).to_bytes(2, "big") + bytes([typ & 0xFF]) + bytes(5)
 
-def aes_keystream(unique_id, msgid, ttl_type):
-    nonce = build_nonce(unique_id, msgid, ttl_type)
+def aes_keystream(unique_id, msgid, typ):
+    nonce = build_nonce(unique_id, msgid, typ)
     aes = ucryptolib.aes(BLE_ENC_KEY, 1)  # ECB
     return aes.encrypt(nonce)
 
-def encrypt_data(plaintext, unique_id, msgid, ttl_type):
-    ks = aes_keystream(unique_id, msgid, ttl_type)
+def encrypt_data(plaintext, unique_id, msgid, typ):
+    ks = aes_keystream(unique_id, msgid, typ)
     return bytes([p ^ ks[i] for i, p in enumerate(plaintext)])
 
 def compute_auth_tag(header, ciphertext):
@@ -147,7 +149,7 @@ def compute_auth_tag(header, ciphertext):
 
 def build_frame(unique_id, msgid, ttl, typ, plaintext):
     ttl_type = ((int(ttl) & 0xF) << 4) | (int(typ) & 0xF)
-    ciphertext = encrypt_data(plaintext, unique_id, msgid, ttl_type)
+    ciphertext = encrypt_data(plaintext, unique_id, msgid, int(typ))
     header = bytes([PROTOCOL_VERSION]) + unique_id + int(msgid).to_bytes(2, "big") + bytes([ttl_type])
     tag = compute_auth_tag(header, ciphertext)
     return header + ciphertext + tag
@@ -166,7 +168,9 @@ def parse_frame(frame):
     computed_tag = compute_auth_tag(header, ciphertext)
     if tag != computed_tag:
         return None
-    return unique_id, msgid, ttl, typ, ciphertext
+    # Decrypt using typ only (not ttl_type) so multi-hop relay doesn't break decryption
+    plaintext = encrypt_data(ciphertext, unique_id, msgid, typ)
+    return unique_id, msgid, ttl, typ, plaintext
 
 def build_adv_payload(frame_bytes):
     payload = bytearray(b"\x02\x01\x06")  # flags
