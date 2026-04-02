@@ -1,0 +1,8 @@
+{
+  "wifi_ssid": "Danwifi",
+  "wifi_password": "wifiisgood",
+  "broker_ip": "10.71.189.30",
+  "node_id": "HeadNode-E<N>",
+  "mqtt_pass": "e<N>-secret",
+  "building_prefix": "<N>"
+}
