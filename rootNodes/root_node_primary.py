@@ -1,47 +1,22 @@
-# root_node_primary.py  –  Unified Head Node (Primary), config-driven
-#
-# Role: BLE gateway between a classroom sensor mesh and the Pi 4 MQTT broker.
-#
-# ── HOW TO DEPLOY TO A NEW BUILDING ──────────────────────────────────────────
-# 1. Copy this file to the Pico (no changes needed).
-# 2. Create config.json on the Pico's flash:
-#
-#      {
-#        "wifi_ssid":       "YourWiFi",
-#        "wifi_password":   "YourPassword",
-#        "broker_ip":       "10.114.66.30",
-#        "node_id":         "HeadNode-E3",
-#        "mqtt_pass":       "e3-secret",
-#        "building_prefix": "3",
-#        "aes_key":         "CSC2106-Group-04"
-#      }
-#
-#    Rules:
-#      - node_id format:         "HeadNode-E<building_number>"
-#      - mqtt_pass convention:   "e<building_number>-secret"
-#      - building_prefix:        the building number digit(s), e.g. "3" for E3
-#      - aes_key must match the bridge's AES key (16 bytes)
-# 3. Power on. The broker accepts it automatically via pattern-based ACL.
-# ─────────────────────────────────────────────────────────────────────────────
+# root_node_primary_fixed.py  –  Unified Head Node (Primary), config-driven, secure BLE
 
 import bluetooth
 import time
 import ujson
 import os
 import ucryptolib
+import uhashlib
 import network
 import umqtt.simple as simple
 from machine import Pin
 from micropython import const
 
-# ── BLE IRQ events ────────────────────────────────────────────────────────────
 _IRQ_SCAN_RESULT = const(5)
 _IRQ_SCAN_DONE   = const(6)
 
 SCAN_MS  = 10_000
 SEEN_MAX = 300
 
-# ── Load config ───────────────────────────────────────────────────────────────
 def load_config():
     try:
         with open("config.json") as f:
@@ -54,16 +29,22 @@ cfg = load_config()
 WIFI_SSID       = cfg["wifi_ssid"]
 WIFI_PASSWORD   = cfg["wifi_password"]
 BROKER_IP       = cfg["broker_ip"]
-NODE_ID         = cfg["node_id"]           # e.g. "HeadNode-E3"
+NODE_ID         = cfg["node_id"]
 MQTT_USER       = ("Pi4-" + NODE_ID).encode()
 MQTT_PASS       = cfg["mqtt_pass"].encode()
 AES_KEY         = cfg.get("aes_key", "CSC2106-Group-04").encode()
-BUILDING_PREFIX = cfg["building_prefix"]   # e.g. "3" — only relay BLE from E3 sensors
+BUILDING_PREFIX = str(cfg["building_prefix"])
 
 CLIENT_ID    = MQTT_USER
 STATUS_TOPIC = "csc2106/{}/status".format(NODE_ID)
 
-# ── WiFi ──────────────────────────────────────────────────────────────────────
+PROTOCOL_VERSION = 0xA1
+BLE_ENC_KEY = b"1234567890ABCDEF"
+BLE_MAC_KEY = b"FEDCBA0987654321"
+COMPANY_ID = b"\x12\x34"
+TYPE_COUNT   = 0x1
+TYPE_HEATMAP = 0x2
+
 def connect_wifi(timeout=20):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -78,35 +59,21 @@ def connect_wifi(timeout=20):
             raise RuntimeError("WiFi timed out — check SSID/password")
     print("WiFi connected:", wlan.ifconfig())
 
-# ── MQTT ──────────────────────────────────────────────────────────────────────
 def mqtt_connect():
-    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP,
-                          user=MQTT_USER, password=MQTT_PASS, keepalive=15)
+    c = simple.MQTTClient(client_id=CLIENT_ID, server=BROKER_IP, user=MQTT_USER, password=MQTT_PASS, keepalive=15)
     c.set_last_will(STATUS_TOPIC.encode(), b"offline", retain=True, qos=1)
     c.connect()
     c.publish(STATUS_TOPIC.encode(), b"online", retain=True, qos=1)
     print("[{}] MQTT connected — broker {}".format(NODE_ID, BROKER_IP))
     return c
 
-# ── AES-CBC encryption ────────────────────────────────────────────────────────
 def encrypt_payload(plaintext_str):
-    iv   = os.urandom(16)
+    iv = os.urandom(16)
     data = plaintext_str.encode()
-    pad  = 16 - (len(data) % 16)
+    pad = 16 - (len(data) % 16)
     data += bytes([pad] * pad)
     cipher = ucryptolib.aes(AES_KEY, 2, iv)
     return iv + cipher.encrypt(data)
-
-# ── BLE Protocol Constants ───────────────────────────────────────────────────
-PROTOCOL_VERSION = 0xA1
-BLE_ENC_KEY = b"1234567890ABCDEF"  # Replace with secure key
-BLE_MAC_KEY = b"FEDCBA0987654321"  # Replace with secure key
-COMPANY_ID = b"\x12\x34"  # Placeholder company ID
-
-# ── Helper Functions ─────────────────────────────────────────────────────────
-def pack_classroom_id(is_west, block_num, level, room_num):
-    packed = (is_west << 12) | (block_num << 9) | (level << 5) | room_num
-    return packed.to_bytes(2, "big")
 
 def unpack_classroom_id(packed):
     value = int.from_bytes(packed, "big")
@@ -116,18 +83,27 @@ def unpack_classroom_id(packed):
     room_num = value & 0x1F
     return is_west, block_num, level, room_num
 
+def classroom_fields_to_room_id(is_west, block_num, level, room_num):
+    prefix = "W" if is_west else "E"
+    return "{}{}-{:02d}-{:02d}".format(prefix, block_num, level, room_num)
+
 def build_nonce(unique_id, msgid, ttl_type):
-    return unique_id + msgid.to_bytes(2, "big") + bytes([ttl_type]) + bytes(5)
+    return unique_id + int(msgid).to_bytes(2, "big") + bytes([ttl_type & 0xFF]) + bytes(5)
+
+def aes_keystream(unique_id, msgid, ttl_type):
+    nonce = build_nonce(unique_id, msgid, ttl_type)
+    aes = ucryptolib.aes(BLE_ENC_KEY, 1)
+    return aes.encrypt(nonce)
 
 def decrypt_data(ciphertext, unique_id, msgid, ttl_type):
-    nonce = build_nonce(unique_id, msgid, ttl_type)
-    aes = ucryptolib.aes(BLE_ENC_KEY, 1, nonce)  # AES ECB mode
-    keystream = aes.encrypt(bytes(16))
-    return bytes([c ^ k for c, k in zip(ciphertext, keystream[:4])])
+    ks = aes_keystream(unique_id, msgid, ttl_type)
+    return bytes([c ^ ks[i] for i, c in enumerate(ciphertext)])
 
 def compute_auth_tag(header, ciphertext):
     h = uhashlib.sha256()
-    h.update(BLE_MAC_KEY + header + ciphertext)
+    h.update(BLE_MAC_KEY)
+    h.update(header)
+    h.update(ciphertext)
     return h.digest()[:4]
 
 def parse_frame(frame):
@@ -136,17 +112,33 @@ def parse_frame(frame):
     unique_id = frame[1:9]
     msgid = int.from_bytes(frame[9:11], "big")
     ttl_type = frame[11]
-    ttl = ttl_type >> 4
+    ttl = (ttl_type >> 4) & 0xF
     typ = ttl_type & 0xF
     ciphertext = frame[12:16]
     tag = frame[16:20]
     header = frame[:12]
-    computed_tag = compute_auth_tag(header, ciphertext)
-    if tag != computed_tag:
+    if tag != compute_auth_tag(header, ciphertext):
         return None
-    return unique_id, msgid, ttl, typ, ciphertext
+    return unique_id, msgid, ttl, typ, ciphertext, ttl_type
 
-# ── Head node class ───────────────────────────────────────────────────────────
+def extract_secure_frame_from_adv(adv_data):
+    raw = bytes(adv_data)
+    i = 0
+    n = len(raw)
+    while i < n:
+        ln = raw[i]
+        if ln == 0:
+            break
+        j = i + 1
+        ad_type = raw[j]
+        field = raw[j + 1 : i + 1 + ln]
+        if ad_type == 0xFF and len(field) >= 22 and field[:2] == COMPANY_ID:
+            frame = field[2:22]
+            if len(frame) == 20:
+                return frame
+        i += ln + 1
+    return None
+
 class HeadNode:
     def __init__(self, mqtt_client):
         self.client  = mqtt_client
@@ -157,7 +149,7 @@ class HeadNode:
         self.ble.active(True)
         self.ble.irq(self._irq)
         self.ble.gap_scan(SCAN_MS, 30000, 30000)
-        print("[{}] BLE scanning... (building prefix: {})".format(NODE_ID, BUILDING_PREFIX))
+        print("[{}] BLE scanning...".format(NODE_ID))
 
     def _seen_check_add(self, key):
         if key in self.seen:
@@ -169,53 +161,46 @@ class HeadNode:
 
     def _irq(self, event, data):
         if event == _IRQ_SCAN_RESULT:
-            addr_type, addr, adv_type, rssi, adv_data = data
             try:
-                raw = bytes(adv_data)
-                idx = raw.find(b"M1|")
-                if idx == -1:
-                    return
-                s = raw[idx:].decode("utf-8", "ignore").split("\x00")[0]
+                frame = extract_secure_frame_from_adv(data[4])
             except Exception:
                 return
+            if not frame:
+                return
 
-            parsed = parse_frame(s)
+            parsed = parse_frame(frame)
             if not parsed:
                 return
 
-            unique_id, msgid, ttl, typ, ciphertext = parsed
-
-            if typ not in ("C", "H"):
+            unique_id, msgid, ttl, typ, ciphertext, ttl_type = parsed
+            if typ not in (TYPE_COUNT, TYPE_HEATMAP):
                 return
 
-            # Only process frames from this building's sensors
-            if not ciphertext.startswith(BUILDING_PREFIX):
-                return
-
-            key = "{}:{}".format(unique_id, msgid)
+            key = bytes(unique_id) + int(msgid).to_bytes(2, "big")
             if self._seen_check_add(key):
                 return
 
-            self._rx_buf.append((typ, ciphertext))
+            plaintext = decrypt_data(ciphertext, unique_id, msgid, ttl_type)
+            packed_room = plaintext[:2]
+            is_west, block_num, level, room_num = unpack_classroom_id(packed_room)
+
+            if str(block_num) != BUILDING_PREFIX:
+                return
+
+            if typ == TYPE_COUNT:
+                value = int.from_bytes(plaintext[2:4], "big")
+            else:
+                value = plaintext[2]
+
+            room_id = classroom_fields_to_room_id(is_west, block_num, level, room_num)
+            self._rx_buf.append((typ, room_id, value))
 
         elif event == _IRQ_SCAN_DONE:
             self.ble.gap_scan(SCAN_MS, 30000, 30000)
 
-    def _publish(self, data_field):
-        try:
-            room_code, count_str = data_field.split(":", 1)
-            room_id = decode_room_id(room_code)
-            count   = int(count_str)
-        except Exception:
-            print("[{}] bad data field: {}".format(NODE_ID, data_field))
-            return
-
+    def _publish(self, room_id, count):
         topic = "csc2106/{}/classroom/{}/occupancy".format(NODE_ID, room_id)
-        msg   = ujson.dumps({
-            "room_id":   room_id,
-            "count":     count,
-            "timestamp": time.time(),
-        })
+        msg = ujson.dumps({"room_id": room_id, "count": count, "timestamp": time.time()})
         led.on()
         try:
             self.client.publish(topic.encode(), encrypt_payload(msg), qos=1)
@@ -226,26 +211,14 @@ class HeadNode:
         finally:
             led.off()
 
-    def _publish_heatmap(self, data_field):
-        try:
-            room_code, hex_str = data_field.split(":", 1)
-            room_id = decode_room_id(room_code)
-            packed  = int(hex_str, 16)
-        except Exception:
-            print("[{}] bad heatmap field: {}".format(NODE_ID, data_field))
-            return
-
+    def _publish_heatmap(self, room_id, packed):
         z1 = (packed >> 6) & 0x3
         z2 = (packed >> 4) & 0x3
         z3 = (packed >> 2) & 0x3
-        z4 =  packed       & 0x3
+        z4 = packed & 0x3
 
         topic = "csc2106/{}/classroom/{}/heatmap".format(NODE_ID, room_id)
-        msg   = ujson.dumps({
-            "room_id":   room_id,
-            "zones":     [z1, z2, z3, z4],
-            "timestamp": time.time(),
-        })
+        msg = ujson.dumps({"room_id": room_id, "zones": [z1, z2, z3, z4], "timestamp": time.time()})
         led.on()
         try:
             self.client.publish(topic.encode(), encrypt_payload(msg), qos=1)
@@ -267,12 +240,12 @@ class HeadNode:
                 last_ping = time.ticks_ms()
 
             while self._rx_buf:
-                typ, payload = self._rx_buf.pop(0)
+                typ, room_id, value = self._rx_buf.pop(0)
                 try:
-                    if typ == "C":
-                        self._publish(payload)
-                    elif typ == "H":
-                        self._publish_heatmap(payload)
+                    if typ == TYPE_COUNT:
+                        self._publish(room_id, value)
+                    elif typ == TYPE_HEATMAP:
+                        self._publish_heatmap(room_id, value)
                 except OSError:
                     print("[{}] MQTT error, reconnecting...".format(NODE_ID))
                     time.sleep(5)
@@ -293,10 +266,8 @@ class HeadNode:
 
             time.sleep_ms(10)
 
-# ── Boot ──────────────────────────────────────────────────────────────────────
 connect_wifi()
-led    = Pin("LED", Pin.OUT)
+led = Pin("LED", Pin.OUT)
 client = mqtt_connect()
-
 node = HeadNode(client)
 node.run()
