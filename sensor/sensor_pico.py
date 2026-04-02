@@ -90,7 +90,7 @@ PROTOCOL_VERSION = 0xA1
 
 BLE_ENC_KEY = cfg["ENC"].encode()
 BLE_MAC_KEY = cfg["MAC"].encode() 
-COMPANY_ID = bytes.fromhex(cfg["company_id"])
+COMPANY_ID = bytes.fromhex(cfg["COMPANY_ID"])
 TYPE_COUNT   = 0x1
 TYPE_HEATMAP = 0x2
 
@@ -319,7 +319,6 @@ class SensorNode:
         self._msgid_ctr   = 0
 
         self.scan()
-        print("Sensor UID:", NODE_UID_HEX, " Room:", ROOM_ID)
 
     def scan(self):
         self.ble.gap_scan(SCAN_MS, 30000, 30000)
