@@ -87,16 +87,17 @@ def classroom_fields_to_room_id(is_west, block_num, level, room_num):
     prefix = "W" if is_west else "E"
     return "{}{}-{:02d}-{:02d}".format(prefix, block_num, level, room_num)
 
-def build_nonce(unique_id, msgid, ttl_type):
-    return unique_id + int(msgid).to_bytes(2, "big") + bytes([ttl_type & 0xFF]) + bytes(5)
+def build_nonce(unique_id, msgid, typ):
+    # Use only typ (not ttl) so decryption works after TTL is decremented during relay.
+    return unique_id + int(msgid).to_bytes(2, "big") + bytes([typ & 0xFF]) + bytes(5)
 
-def aes_keystream(unique_id, msgid, ttl_type):
-    nonce = build_nonce(unique_id, msgid, ttl_type)
+def aes_keystream(unique_id, msgid, typ):
+    nonce = build_nonce(unique_id, msgid, typ)
     aes = ucryptolib.aes(BLE_ENC_KEY, 1)
     return aes.encrypt(nonce)
 
-def decrypt_data(ciphertext, unique_id, msgid, ttl_type):
-    ks = aes_keystream(unique_id, msgid, ttl_type)
+def decrypt_data(ciphertext, unique_id, msgid, typ):
+    ks = aes_keystream(unique_id, msgid, typ)
     return bytes([c ^ ks[i] for i, c in enumerate(ciphertext)])
 
 def compute_auth_tag(header, ciphertext):
@@ -119,7 +120,7 @@ def parse_frame(frame):
     header = frame[:12]
     if tag != compute_auth_tag(header, ciphertext):
         return None
-    return unique_id, msgid, ttl, typ, ciphertext, ttl_type
+    return unique_id, msgid, ttl, typ, ciphertext
 
 def extract_secure_frame_from_adv(adv_data):
     raw = bytes(adv_data)
@@ -172,7 +173,7 @@ class HeadNode:
             if not parsed:
                 return
 
-            unique_id, msgid, ttl, typ, ciphertext, ttl_type = parsed
+            unique_id, msgid, ttl, typ, ciphertext = parsed
             if typ not in (TYPE_COUNT, TYPE_HEATMAP):
                 return
 
@@ -180,7 +181,7 @@ class HeadNode:
             if self._seen_check_add(key):
                 return
 
-            plaintext = decrypt_data(ciphertext, unique_id, msgid, ttl_type)
+            plaintext = decrypt_data(ciphertext, unique_id, msgid, typ)
             packed_room = plaintext[:2]
             is_west, block_num, level, room_num = unpack_classroom_id(packed_room)
 
