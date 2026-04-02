@@ -13,7 +13,7 @@
 #      {
 #        "wifi_ssid":       "YourWiFi",
 #        "wifi_password":   "YourPassword",
-#        "broker_ip":       "10.71.189.30",
+#        "broker_ip":       "10.114.66.30",
 #        "node_id":         "BackUp-E3",
 #        "primary_id":      "HeadNode-E3",
 #        "mqtt_pass":       "e3-secret",

@@ -27,7 +27,7 @@ _IRQ_SCAN_DONE   = const(6)
 # ── Config ────────────────────────────────────────────────────────────────────
 WIFI_SSID     = "Danwifi"
 WIFI_PASSWORD = "wifiisgood"
-BROKER_IP     = "10.71.189.30"
+BROKER_IP     = "10.114.66.30"
 MQTT_USER     = b"Pi4-BackUp-E2"
 MQTT_PASS     = b"e2-secret"
 AES_KEY       = b"CSC2106-Group-04"  # 16 bytes — must match bridge

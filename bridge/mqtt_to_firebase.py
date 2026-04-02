@@ -40,7 +40,7 @@ log = logging.getLogger("bridge")
 # ── Config ─────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "10.71.189.30")
+MQTT_BROKER_IP = os.getenv("MQTT_BROKER_IP", "10.114.66.30")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USER = os.getenv("MQTT_USER", "bridge")
 MQTT_PASS = os.getenv("MQTT_PASS", "bridge-secret")
