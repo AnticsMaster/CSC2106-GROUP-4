@@ -113,6 +113,7 @@ def sub_acl_ok(client_id, topic_filter):
             "csc2106/+/classroom/+/occupancy",
             "csc2106/+/classroom/+/heatmap",
             "csc2106/+/classroom/+/status",
+            "csc2106/+/status",
         )
 
     node_id = client_id[4:] if client_id.startswith("Pi4-") else client_id
