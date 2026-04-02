@@ -43,7 +43,7 @@ PRIMARY_STATUS_TOPIC = "csc2106/{}/status".format(PRIMARY_ID)
 PROTOCOL_VERSION = 0xA1
 BLE_ENC_KEY = cfg["ENC"].encode()
 BLE_MAC_KEY = cfg["MAC"].encode() 
-COMPANY_ID = bytes.fromhex(cfg["company_id"])
+COMPANY_ID = bytes.fromhex(cfg["COMPANY_ID"])
 TYPE_COUNT   = 0x1
 TYPE_HEATMAP = 0x2
 
