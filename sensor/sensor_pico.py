@@ -168,9 +168,8 @@ def parse_frame(frame):
     computed_tag = compute_auth_tag(header, ciphertext)
     if tag != computed_tag:
         return None
-    # Decrypt using typ only (not ttl_type) so multi-hop relay doesn't break decryption
-    plaintext = encrypt_data(ciphertext, unique_id, msgid, typ)
-    return unique_id, msgid, ttl, typ, plaintext
+    # Return raw ciphertext — relay sensors forward it unchanged, only head node decrypts
+    return unique_id, msgid, ttl, typ, ciphertext
 
 def build_adv_payload(frame_bytes):
     payload = bytearray(b"\x02\x01\x06")  # flags
